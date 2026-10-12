@@ -198,11 +198,15 @@ function rttPasses(aServices, bServices) {
   return out;
 }
 // ---- Request budget: RTT limits how often we may ask, so each answer is reused for a while ----
-const RTT_PASS_TTL = 60 * 1000;   // New Cross Gate and Sydenham passes
-const RTT_CALL_TTL = 120 * 1000;  // Brockley calls change less often
+// The Hobbyist plan allows 10 requests a minute, 100 an hour and 1,000 a day. Two passes queries every
+// four minutes is 30 an hour, 720 a day, which leaves room for Brockley's own calls, restarts and debug visits.
+const RTT_PASS_TTL = (Number(process.env.RTT_PASS_TTL_S) || 240) * 1000; // New Cross Gate and Sydenham passes
+const RTT_CALL_TTL = (Number(process.env.RTT_CALL_TTL_S) || 1200) * 1000; // Brockley calls (only used when National Rail is not answering)
+let rttRemainHour = null, rttRemainDay = null;
 const RTT_STALE_MAX = 15 * 60 * 1000; // keep using the last good answer this long if RTT refuses
 const rttStore = {};  // code -> { at, data }
 let rttBackoffUntil = 0;
+let rttInfo = null;
 let rttRate = null;   // last rate-limit headers RTT sent
 
 async function rttFetchWith(i, url) {
@@ -211,6 +215,9 @@ async function rttFetchWith(i, url) {
   const rate = {};
   r.headers.forEach((v, k) => { if (/^x-ratelimit/i.test(k)) rate['token' + (i + 1) + ' ' + k] = v; });
   if (Object.keys(rate).length) rttRate = Object.assign(rttRate || {}, rate);
+  const rh = Number(r.headers.get('x-ratelimit-remaining-hour')), rd = Number(r.headers.get('x-ratelimit-remaining-day'));
+  if (Number.isFinite(rh) && r.headers.get('x-ratelimit-remaining-hour') != null) rttRemainHour = rh;
+  if (Number.isFinite(rd) && r.headers.get('x-ratelimit-remaining-day') != null) rttRemainDay = rd;
   if (r.status === 429) {
     const ra = Number(r.headers.get('retry-after'));
     rttRate = Object.assign(rttRate || {}, { 'last429 retry-after': r.headers.get('retry-after') });
@@ -246,7 +253,12 @@ async function rttFetch(url) {
 // One location, answered from the store when it is fresh enough, or when RTT has told us to wait.
 async function rttLocation(code, ttl, detailed, h, force) {
   const hit = rttStore[code], now = Date.now();
-  if (hit && !force && now - hit.at < ttl) return hit.data;
+  // Running low on the hour's or day's allowance: ask less often, and stop altogether near the end.
+  let stretch = 1;
+  if ((rttRemainHour != null && rttRemainHour < 25) || (rttRemainDay != null && rttRemainDay < 150)) stretch = 3;
+  const nearlyOut = (rttRemainHour != null && rttRemainHour <= 5) || (rttRemainDay != null && rttRemainDay <= 20);
+  if (hit && !force && now - hit.at < ttl * stretch) return hit.data;
+  if (nearlyOut && hit && now - hit.at < RTT_STALE_MAX) return Object.assign({}, hit.data, { _stale: true });
   if (now < rttBackoffUntil) {
     if (hit && now - hit.at < RTT_STALE_MAX) return Object.assign({}, hit.data, { _stale: true });
     throw new Error('HTTP 429');
@@ -291,12 +303,18 @@ async function getRtt(debug, skipHere) {
     if (debug) {
       const tally = (r) => { const o = {}; (r.services || []).forEach((s) => { const k = (s.temporalData && s.temporalData.displayAs) || 'PASS'; o[k] = (o[k] || 0) + 1; }); return o; };
       let info = null;
-      if (Date.now() >= rttBackoffUntil) info = await rttFetch(RTT_BASE + '/api/info').catch((e) => ({ _error: String((e && e.message) || e) }));
+      if (rttInfo && Date.now() - rttInfo.at < 3600 * 1000) info = rttInfo.data;
+      else if (Date.now() >= rttBackoffUntil && (rttRemainHour == null || rttRemainHour > 10)) {
+        info = await rttFetch(RTT_BASE + '/api/info').catch((e) => ({ _error: String((e && e.message) || e) }));
+        if (!info._error) rttInfo = { at: Date.now(), data: info };
+      }
       res.sample = {
         codes: { here: RTT_CODE, a: RTT_A, b: RTT_B, frac: RTT_FRAC },
         detailedMode: { a: A._mode, b: B._mode },
         rateLimits: rttRate,
         tokens: { configured: rttKeys().length, lastUsed: rttUsed + 1, avoidedForSeconds: Object.keys(rttBadUntil).map((i) => Math.max(0, Math.round((rttBadUntil[i] - Date.now()) / 1000))) },
+        remaining: { hour: rttRemainHour, day: rttRemainDay },
+        refreshSeconds: { passes: RTT_PASS_TTL / 1000, calls: RTT_CALL_TTL / 1000 },
         backoffSeconds: Math.max(0, Math.round((rttBackoffUntil - Date.now()) / 1000)),
         info,
         displayAs: { here: tally(H), a: tally(A), b: tally(B) }
