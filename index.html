@@ -114,7 +114,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 
   <details>
     <summary>How the times are worked out</summary>
-    <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
+    <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives (about 57 for Windrush trains, which your sightings showed run a little later). Fast-line times from Realtime Trains are held back 13 seconds, again to match what you saw from the window. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
     <p>No train runs to the second, so each prediction carries a window either side of it: 20 seconds for live Windrush times, 30 for live National Rail stopping trains, 60 for simulated stopping trains and 90 for simulated fast-line trains. While the clock is inside that window the track badge turns amber, the card says DUE, and a DUE tag sits at your window. The window settings are at the top of the script.</p>
     <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from Realtime Trains or National Rail when either is set up. Thameslink and Southern fast-line trains come from Realtime Trains when that feed is set up: it gives their times through New Cross Gate and Sydenham, and the page works out when each one reaches Brockley between them. Anything without a live feed follows a placeholder pattern rather than the real timetable, so treat it as a guide.</p>
   </details>
@@ -131,6 +131,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     dwellS: 30,         // seconds a stopping train waits at the platform
     nearPxPerS: 8,      // on-screen speed in the last 12 seconds
     nearS: 12,
+    fastLagS: 13,       // Realtime Trains fast-line times came out this many seconds early at your window
+    windrushSouthExtraS: 10, // southbound Windrush trains pass this much later than arrival + dwell + braking
     slackLiveS: 20,     // how far a live prediction can drift either side, in seconds
     slackStopS: 30,     // live National Rail stopping trains (dwell time varies)
     slackSimS: 60,      // simulated stopping trains
@@ -252,7 +254,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
       if (p.direction === 'inbound'){
         out.push({ row:'NS', svc:'wr', label:'Windrush to ' + dest, pass: arrive - APP*1000, live:true });
       } else {
-        out.push({ row:'SS', svc:'wr', label:'Windrush to ' + dest, pass: arrive + (CFG.dwellS + APP)*1000, live:true });
+        out.push({ row:'SS', svc:'wr', label:'Windrush to ' + dest, pass: arrive + (CFG.dwellS + APP + CFG.windrushSouthExtraS)*1000, live:true });
       }
     });
     return out;
@@ -273,7 +275,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     (rtt.trains || []).forEach(function(s){
       if (!s.time) return;
       var tl = s.operator === 'TL', dest = s.destination || (s.dir === 'N' ? 'London' : 'the coast');
-      out.push({ row: s.dir === 'N' ? 'NF' : 'SF', svc: tl ? 'th' : 'fa', label: (tl ? 'Thameslink to ' : 'Southern fast to ') + dest, pass: s.time, live:true, src:'rtt' });
+      out.push({ row: s.dir === 'N' ? 'NF' : 'SF', svc: tl ? 'th' : 'fa', label: (tl ? 'Thameslink to ' : 'Southern fast to ') + dest, pass: s.time + CFG.fastLagS*1000, live:true, src:'rtt' });
     });
     (rtt.calls || []).forEach(function(s){
       if (!s.dep) return;
