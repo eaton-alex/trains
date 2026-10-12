@@ -1,0 +1,746 @@
+<title>Brockley Four Tracks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+/* Layout: one pixel-art scene of the view from the window, four tracks stacked with the nearest at the bottom, then a card per track below. North is on the right when the window is on the east side. Scene mood follows the London clock. */
+:root{
+  --page:#dfe9ee; --ink:#13222c; --muted:#4d6370; --panel:#eef4f7; --line:#b4c6d0; --frame:#b9c4cb;
+  --marker:#e8a200; --pill:#13222c; --pilltext:#f4f8fa; --glass:#bfe3f5; --wheel:#26303a;
+  --display:'Press Start 2P', ui-monospace, 'Courier New', monospace;
+  --body:'Atkinson Hyperlegible', system-ui, sans-serif;
+  color-scheme: light;
+}
+:root[data-mood="night"]{
+  --page:#12162e; --ink:#e8ecf7; --muted:#9aa5c8; --panel:#1a2040; --line:#323b6a; --frame:#2a3157;
+  --marker:#ffc233; --pill:#f4f8fa; --pilltext:#12162e; --glass:#ffd86b; --wheel:#0c0f20;
+  color-scheme: dark;
+}
+*{box-sizing:border-box}
+body{background:var(--page);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.5;padding-inline:max(16px,3vw);padding-block:24px 40px;transition:background .6s}
+main{max-width:1040px;margin-inline:auto;display:flex;flex-direction:column;gap:20px}
+header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
+h1{font-family:var(--display);font-weight:400;font-size:clamp(16px,3.4vw,24px);line-height:1.35;margin:0;text-wrap:balance}
+.sub{margin:6px 0 0;color:var(--muted);font-size:15px}
+.clock{font-family:var(--display);font-size:clamp(14px,3vw,20px);font-variant-numeric:tabular-nums}
+.pills{display:flex;flex-wrap:wrap;gap:8px}
+.pill{font-size:13px;padding:4px 10px;border:2px solid var(--line);background:var(--panel);display:inline-flex;gap:8px;align-items:center;min-width:0}
+.pill i{width:10px;height:10px;display:inline-block;background:var(--muted);flex:none}
+.pill.live i{background:#2fb35a}
+.pill.sim i{background:var(--marker)}
+.stage{display:flex;flex-direction:column;gap:8px}
+.scale{display:flex;justify-content:space-between;gap:8px;font-family:var(--display);font-size:9px;line-height:1.6;color:var(--muted);text-transform:uppercase}
+.scale span{flex:1 1 0;min-width:0}
+.scale .mid{text-align:center;color:var(--ink)}
+.scale .r{text-align:right}
+.frame{background:var(--frame);border:8px solid var(--frame);border-bottom-width:16px;box-shadow:0 0 0 2px var(--line)}
+canvas#scene{display:block;width:100%;height:auto;aspect-ratio:320/180;image-rendering:pixelated;image-rendering:crisp-edges}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.card{background:var(--panel);border:2px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.chead{display:flex;gap:10px;align-items:center}
+.badge{font-family:var(--display);font-size:12px;width:30px;height:30px;display:grid;place-items:center;background:var(--pill);color:var(--pilltext);flex:none}
+.rowname{font-family:var(--display);font-size:10px;line-height:1.5}
+.rowsub{font-size:14px;color:var(--muted)}
+.where{font-size:12px;color:var(--muted)}
+.eta{font-family:var(--display);font-size:clamp(20px,4vw,28px);font-variant-numeric:tabular-nums;margin-top:6px}
+.svc{font-size:14px;overflow-wrap:anywhere}
+.then{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.adj{font-size:12px;color:var(--muted)}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+button{font:inherit;font-size:14px;color:var(--ink);background:var(--panel);border:2px solid var(--ink);padding:6px 12px;cursor:pointer;box-shadow:3px 3px 0 var(--ink)}
+button:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink)}
+button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--marker);outline-offset:2px}
+.spot{width:100%;min-height:48px;margin-top:8px;font-family:var(--display);font-size:10px;line-height:1.5;text-align:center;background:var(--marker);color:#13222c}
+label.chk{display:inline-flex;gap:8px;align-items:center;font-size:14px;cursor:pointer}
+details{background:var(--panel);border:2px solid var(--line);padding:10px 14px}
+summary{cursor:pointer;font-weight:700}
+details p{margin:10px 0 0;max-width:68ch;font-size:15px}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));max-width:560px;margin-inline:auto;z-index:5;background:var(--pill);color:var(--pilltext);border:2px solid var(--ink);padding:10px 14px;display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:14px}
+.toast span{min-width:0;overflow-wrap:anywhere}
+.toast button{color:var(--pilltext);background:transparent;border-color:var(--pilltext);box-shadow:none;flex:none}
+#log{margin:10px 0 0;padding-left:1.4em;font-size:14px;font-variant-numeric:tabular-nums}
+#log li{margin-block:4px;overflow-wrap:anywhere}
+#log .x{font-size:12px;padding:2px 8px;box-shadow:none}
+.csv{width:100%;margin-top:10px;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;background:var(--page);color:var(--ink);border:2px solid var(--line);padding:8px}
+@media (max-width:680px){
+  .frame{border-width:5px;border-bottom-width:10px}
+  .scale{font-size:7px}
+}
+</style>
+
+<main>
+  <header>
+    <div>
+      <h1>Brockley Four Tracks</h1>
+      <p class="sub">What is about to pass your window, 120 m south of Brockley platform.</p>
+    </div>
+    <div class="clock" id="clock" aria-label="London time">--:--:--</div>
+  </header>
+
+  <div class="pills" id="pills" role="status"></div>
+
+  <section class="stage" aria-label="The four tracks outside your window">
+    <div class="scale" aria-hidden="true"><span id="scaleL"></span><span class="mid">Your window</span><span class="r" id="scaleR"></span></div>
+    <div class="frame"><canvas id="scene" width="320" height="180" role="img" aria-label="Pixel-art view of four railway tracks with trains, nearest track at the bottom"></canvas></div>
+  </section>
+
+  <section class="cards" id="cards" aria-label="Next train on each track"></section>
+
+  <div class="controls">
+    <button id="side" type="button">Window side: east</button>
+    <button id="flip" type="button">Flip track order</button>
+    <button id="mood" type="button">Scene: auto</button>
+    <label class="chk" for="simToggle"><input id="simToggle" type="checkbox" checked> Show simulated trains</label>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <details id="logbox">
+    <summary>Your sightings <span id="logCount">(0)</span></summary>
+    <p id="learnNote"></p>
+    <p id="storeNote"></p>
+    <ol id="log"></ol>
+    <div class="controls"><button id="copyCsv" type="button">Copy as CSV</button></div>
+    <textarea id="csvBox" class="csv" readonly hidden rows="6" aria-label="Sightings as CSV"></textarea>
+  </details>
+
+  <details>
+    <summary>How the times are worked out</summary>
+    <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
+    <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from National Rail when that feed is set up. Everything else follows a repeating pattern based on the usual timetable, so treat it as a guide.</p>
+  </details>
+</main>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---- Settings you can change ---------------------------------------
+  var CFG = {
+    windowDistM: 120,   // metres from the platform end to your window
+    accel: 0.8,         // m/s per second, braking and pulling away
+    dwellS: 30,         // seconds a stopping train waits at the platform
+    nearPxPerS: 8,      // on-screen speed in the last 12 seconds
+    nearS: 12,
+    fieldS: 150,        // how far ahead the scene looks, in seconds
+    W: 320, H: 180,
+    tflUrl: 'https://api.tfl.gov.uk/StopPoint/910GBROCKLY/Arrivals'
+  };
+  var RAILS = [92, 110, 128, 146]; // rail height of each track in the scene, farthest to nearest
+  var APP = Math.sqrt(2 * CFG.windowDistM / CFG.accel); // seconds from window to platform
+  var NEAR_PX = CFG.nearPxPerS * CFG.nearS;
+  var FAR_K = (CFG.W / 2 - NEAR_PX) / (CFG.fieldS - CFG.nearS);
+  var WX = CFG.W / 2;
+
+  var ROWS = [
+    { id:'NS', name:'Platform 1', sub:'Northbound, stopping', dir:-1 },
+    { id:'NF', name:'Fast line',  sub:'Northbound, non-stop',  dir:-1 },
+    { id:'SF', name:'Fast line',  sub:'Southbound, non-stop',  dir:1 },
+    { id:'SS', name:'Platform 2', sub:'Southbound, stopping', dir:1 }
+  ];
+  // Which side of the railway your window is on. Looking out from the east you face west, so north is on your right.
+  var side = store('bft-side') === 'west' ? 'west' : 'east';
+  function applyDirs(){
+    ROWS.forEach(function(r){ r.dir = (r.id.charAt(0) === 'N' ? -1 : 1) * (side === 'east' ? -1 : 1); });
+  }
+  applyDirs();
+  var SVC = {
+    wr: { color:'#d63b32', stripe:'#ffffff', cars:4 },
+    st: { color:'#2f9e5c', stripe:'#e8f5ec', cars:3 },
+    fa: { color:'#1b6a45', stripe:'#f0c84b', cars:4 }
+  };
+
+  // ---- Small helpers ---------------------------------------------------
+  function $(id){ return document.getElementById(id); }
+  function store(k, v){
+    try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch(e){ return null; }
+  }
+  function rnd(a,b,c){
+    var x = (a*374761393 + b*668265263 + c*2147483647) | 0;
+    x = (x ^ (x >>> 13)) * 1274126177 | 0;
+    return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+  }
+  function londonParts(ms){
+    var f = new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/London', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false, month:'numeric' });
+    var o = {}; f.formatToParts(new Date(ms)).forEach(function(p){ o[p.type] = p.value; });
+    return { h:+o.hour % 24, m:+o.minute, s:+o.second, mo:+o.month };
+  }
+  function clockText(ms){
+    var p = londonParts(ms);
+    return String(p.h).padStart(2,'0') + ':' + String(p.m).padStart(2,'0');
+  }
+  function fmtCount(sec){
+    var s = Math.max(0, Math.ceil(sec));
+    return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  }
+
+  // ---- Train data --------------------------------------------------------
+  // Simulated pattern. Minutes are within each hour.
+  var WR_N = [7,14.5,22,29.5,37,44.5,52,59.5];
+  var WR_S = [[2,'West Croydon'],[11,'Crystal Palace'],[17,'West Croydon'],[26,'Crystal Palace'],[32,'West Croydon'],[41,'Crystal Palace'],[47,'West Croydon'],[56,'Crystal Palace']];
+
+  function genSim(now, withWindrush, withStopping){
+    var out = [], h0 = Math.floor(now/3600000), h, i, base;
+    for (h = h0-1; h <= h0+1; h++){
+      base = h*3600000;
+      if (withWindrush){
+        WR_N.forEach(function(mn){
+          out.push({ row:'NS', svc:'wr', label:'Windrush to Highbury & Islington', pass: base + mn*60000 - APP*1000, live:false });
+        });
+        WR_S.forEach(function(e){
+          out.push({ row:'SS', svc:'wr', label:'Windrush to ' + e[1], pass: base + e[0]*60000 + (CFG.dwellS + APP)*1000, live:false });
+        });
+      }
+      if (withStopping !== false) [3,33].forEach(function(mn){
+        out.push({ row:'NS', svc:'st', label:'Southern stopping service', pass: base + mn*60000 - (CFG.dwellS + APP)*1000, live:false });
+      });
+      if (withStopping !== false) [7,37].forEach(function(mn){
+        out.push({ row:'SS', svc:'st', label:'Southern stopping service', pass: base + mn*60000 + APP*1000, live:false });
+      });
+      for (i = 0; i < 5; i++){
+        out.push({ row:'NF', svc:'fa', label:'Southern fast service', pass: base + (i*12 + 1 + rnd(h,i,1)*6)*60000, live:false });
+        out.push({ row:'SF', svc:'fa', label:'Southern fast service', pass: base + (i*12 + 4 + rnd(h,i,2)*6)*60000, live:false });
+      }
+    }
+    return out;
+  }
+
+  var liveList = [], liveAt = 0, liveOk = false, liveNr = false, nrLive = false, liveTried = false, failCount = 0, apiGone = false;
+  function tflToTrains(arr){
+    var seen = {}, out = [];
+    arr.forEach(function(p){
+      if (p.lineId && p.lineId !== 'windrush') return;
+      var arrive = Date.parse(p.expectedArrival);
+      if (!arrive) return;
+      var key = p.vehicleId + p.direction;
+      if (seen[key]) return; seen[key] = 1;
+      var dest = String(p.destinationName || p.destination || '').replace(/ Rail Station$/, '');
+      if (p.direction === 'inbound'){
+        out.push({ row:'NS', svc:'wr', label:'Windrush to ' + dest, pass: arrive - APP*1000, live:true });
+      } else {
+        out.push({ row:'SS', svc:'wr', label:'Windrush to ' + dest, pass: arrive + (CFG.dwellS + APP)*1000, live:true });
+      }
+    });
+    return out;
+  }
+  function nrToTrains(list){
+    var out = [];
+    list.forEach(function(s){
+      if (!s.dep) return;
+      var dest = s.destination || 'London';
+      if (String(s.platform) === '1') out.push({ row:'NS', svc:'st', label:'Southern to ' + dest, pass: s.dep - (CFG.dwellS + APP)*1000, live:true });
+      else if (String(s.platform) === '2') out.push({ row:'SS', svc:'st', label:'Southern to ' + dest, pass: s.dep + APP*1000, live:true });
+    });
+    return out;
+  }
+  function getJson(url){
+    return fetch(url, { cache:'no-store' }).then(function(r){
+      if (!r.ok) throw new Error('status ' + r.status);
+      return r.json();
+    });
+  }
+  function direct(){
+    return getJson(CFG.tflUrl).then(function(arr){ return { list: tflToTrains(arr), tfl:true, nr:false }; });
+  }
+  // On your own site the page asks /api/trains, which holds the keys. Anywhere else it asks TfL directly.
+  function pullOnce(){
+    if (!apiGone && /^https?:$/.test(location.protocol)){
+      return getJson('/api/trains').then(function(j){
+        var haveTfl = !!(j && j.tfl && j.tfl.ok), haveNr = !!(j && j.nr && j.nr.ok);
+        if (!haveTfl && !haveNr) throw new Error('no data');
+        var out = [];
+        if (haveTfl) out = out.concat(tflToTrains(j.tfl.trains || []));
+        if (haveNr) out = out.concat(nrToTrains(j.nr.trains || []));
+        return { list: out, tfl: haveTfl, nr: haveNr };
+      }).catch(function(e){
+        if (/404/.test(String(e && e.message))) apiGone = true;
+        return direct();
+      });
+    }
+    return direct();
+  }
+  function pullLive(){
+    pullOnce().then(function(r){
+      liveList = r.list; liveAt = Date.now(); liveOk = r.tfl; liveNr = r.nr; liveTried = true; failCount = 0;
+    }).catch(function(){
+      liveOk = false; liveNr = false; liveTried = true; failCount++;
+    }).then(function(){
+      setTimeout(pullLive, failCount > 2 ? 120000 : 30000);
+    });
+  }
+
+  var trains = [];
+  function rebuild(now){
+    var fresh = (now - liveAt) < 150000;
+    var useLive = liveOk && fresh, useNr = liveNr && fresh;
+    nrLive = useNr;
+    var live = liveList.filter(function(t){ return t.svc === 'wr' ? useLive : useNr; });
+    var list = live.concat(genSim(now, !useLive, !useNr));
+    var simOn = $('simToggle').checked;
+    trains = list.map(function(t){
+      var raw = t.raw != null ? t.raw : t.pass;
+      return { row:t.row, svc:t.svc, label:t.label, live:t.live, raw:raw, pass: raw + (bias[t.row + ':' + (t.live ? 'live' : 'sim')] || 0) * 1000 };
+    }).filter(function(t){
+      if (!simOn && !t.live) return false;
+      return t.pass > now - 45000 && t.pass < now + 90*60000;
+    }).sort(function(a,b){ return a.pass - b.pass; });
+    return useLive;
+  }
+
+  // ---- Scene palettes ---------------------------------------------------------
+  var SCENE = {
+    day: {
+      skyTop:'#aebcc6', skyBot:'#e2e8ea', cloud:'#f1f4f5', cloud2:'#cdd5d9',
+      brick:'#c9a86c', brick2:'#b8955a', roof:'#69707a', roof2:'#515862', win:'#eef2f2', dormer:'#3c4450', chimney:'#9b6a4f',
+      tree:['#4c6a39','#6a8a44','#8aa150','#a0692f'], trunk:'#5a4636',
+      grass:['#6f9145','#5a7b38','#8da451','#a39a5c'],
+      ballast:['#a39f95','#8d897f','#b8b4a8'], rail:'#8f5c3b', sleeper:'#5d4f43', sleeper2:'#3f3c3a',
+      fence:'#a18a69', fence2:'#7d6a4f', ivy:['#4d8a39','#6ba44b','#86b45a'],
+      pot:'#2b8c99', hyd:'#d44f6f', hyd2:'#a03556', bench:'#bcc3b6', soil:'#5a4a3a'
+    },
+    night: {
+      skyTop:'#0a0e28', skyBot:'#252c55', cloud:'#2e3664', cloud2:'#222954', star:'#fff4c2',
+      brick:'#6b5a4a', brick2:'#55463a', roof:'#2c3140', roof2:'#222735', win:'#ffd36a', winOff:'#3a3f5c', dormer:'#171b29', chimney:'#4a3a36',
+      tree:['#1b3326','#243f2e','#2e4a35','#4a3a28'], trunk:'#2a2220',
+      grass:['#2c4a2e','#223c27','#365434','#4a4633'],
+      ballast:['#4a4c5e','#3a3c4c','#5a5c70'], rail:'#b07a55', sleeper:'#2a2a3a', sleeper2:'#1c1c2a',
+      fence:'#4a3f3a', fence2:'#352e2c', ivy:['#23472b','#2f5a35','#3b6a3e'],
+      pot:'#1d5e68', hyd:'#a03a58', hyd2:'#7a2a42', bench:'#6a7080', soil:'#2a2220'
+    }
+  };
+  var pal = {}, skyC = null, frontC = null, sceneCtx = null;
+  var CLOUDS = [{x:20,y:8,w:46,v:1.2},{x:130,y:20,w:60,v:0.8},{x:240,y:6,w:40,v:1.5},{x:90,y:30,w:34,v:1}];
+
+  function hexRgb(c){ return [parseInt(c.substr(1,2),16), parseInt(c.substr(3,2),16), parseInt(c.substr(5,2),16)]; }
+  function mix(a, b, t){
+    var A = hexRgb(a), B = hexRgb(b);
+    return 'rgb(' + A.map(function(v, i){ return Math.round(v + (B[i] - v) * t); }).join(',') + ')';
+  }
+  function mkRng(seed){
+    return function(){
+      seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function rect(ctx, c, x, y, w, h){ ctx.fillStyle = c; ctx.fillRect(x, y, w, h); }
+  function disc(ctx, cx, cy, r, c){
+    ctx.fillStyle = c;
+    for (var y = -r; y <= r; y++){
+      var w = Math.floor(Math.sqrt(r * r - y * y));
+      ctx.fillRect(cx - w, cy + y, 2 * w + 1, 1);
+    }
+  }
+  function mkLayer(){
+    var c = document.createElement('canvas'); c.width = CFG.W; c.height = CFG.H;
+    var x = c.getContext('2d'); x.imageSmoothingEnabled = false;
+    return { c:c, x:x };
+  }
+  function drawHouse(f, P, x, w, dormer, rnd){
+    var r, k, wx;
+    rect(f, P.brick, x, 44, w, 12);
+    rect(f, P.brick2, x, 54, w, 2);
+    for (r = 0; r < 8; r++) rect(f, r % 2 ? P.roof : P.roof2, x + 1 + r, 43 - r, w - 2 - 2 * r, 1);
+    if (dormer){
+      rect(f, P.dormer, x + Math.floor(w / 2) - 5, 37, 10, 6);
+      rect(f, (P.winOff && rnd() < 0.5) ? P.winOff : P.win, x + Math.floor(w / 2) - 3, 39, 6, 3);
+    }
+    rect(f, P.chimney, x + w - 8, 34, 3, 6);
+    for (k = 0; k < 4; k++){
+      wx = x + 4 + k * Math.floor((w - 8) / 3);
+      rect(f, (P.winOff && rnd() < 0.35) ? P.winOff : P.win, wx, 46, 3, 3);
+      rect(f, (P.winOff && rnd() < 0.35) ? P.winOff : P.win, wx, 51, 3, 3);
+    }
+  }
+  // Paints the still parts of the view: sky, trees, houses, embankment, tracks and your fence.
+  function buildLayers(){
+    var a = mkLayer(), b = mkLayer(), s = a.x, f = b.x, P = pal, W = CFG.W, H = CFG.H, rn = mkRng(11), i, x, y;
+    skyC = a.c; frontC = b.c;
+    for (i = 0; i < 9; i++) rect(s, mix(P.skyTop, P.skyBot, i / 8), 0, i * 8, W, 9);
+    if (P.star){ for (i = 0; i < 46; i++) rect(s, P.star, Math.floor(rn() * W), Math.floor(rn() * 44), 1, 1); }
+    // far tower block and tree line
+    rect(f, mix(P.skyBot, P.roof, 0.35), 54, 22, 5, 20);
+    for (x = -4; x < W; x += 13) disc(f, x + Math.floor(rn() * 6), 40 + Math.floor(rn() * 5), 8 + Math.floor(rn() * 5), P.tree[Math.floor(rn() * 3)]);
+    // semi-detached houses
+    [[4,30,0],[38,32,1],[76,28,0],[108,34,1],[148,30,0],[182,32,1],[218,30,0]].forEach(function(h){ drawHouse(f, P, h[0], h[1], h[2], rn); });
+    // embankment
+    rect(f, P.grass[1], 0, 56, W, 24);
+    for (i = 0; i < 90; i++) disc(f, Math.floor(rn() * W), 57 + Math.floor(rn() * 20), 3 + Math.floor(rn() * 5), P.grass[Math.floor(rn() * 3)]);
+    for (i = 0; i < 40; i++) rect(f, P.grass[3], Math.floor(rn() * W), 70 + Math.floor(rn() * 10), 2, 1);
+    rect(f, P.grass[0], 0, 77, W, 3);
+    // the big tree on the right
+    rect(f, P.trunk, 296, 40, 4, 30);
+    disc(f, 302, 22, 17, P.tree[0]); disc(f, 286, 32, 12, P.tree[1]); disc(f, 312, 34, 11, P.tree[2]);
+    disc(f, 300, 40, 9, P.tree[3]); disc(f, 318, 20, 9, P.tree[1]); disc(f, 292, 18, 8, P.tree[2]);
+    // tracks
+    rect(f, P.ballast[0], 0, 80, W, 73);
+    for (i = 0; i < 700; i++) rect(f, P.ballast[1 + (i % 2)], Math.floor(rn() * W), 80 + Math.floor(rn() * 72), 1, 1);
+    RAILS.forEach(function(ry, t){
+      for (x = 2; x < W; x += 7) rect(f, t === 3 ? P.sleeper2 : P.sleeper, x, ry + 2, 4, 3);
+      rect(f, P.rail, 0, ry, W, 2);
+      rect(f, P.ballast[2], 0, ry + 5, W, 1);
+    });
+    // the line opposite your window
+    for (y = 80; y < 152; y += 3) rect(f, P.marker, WX, y, 1, 1);
+    // your fence and garden
+    for (y = 153; y < H; y += 3){ rect(f, P.fence, 0, y, W, 2); rect(f, P.fence2, 0, y + 2, W, 1); }
+    rect(f, P.fence2, 118, 153, 3, H - 153); rect(f, P.fence2, 202, 153, 3, H - 153);
+    for (x = 0; x < W; x += 5) disc(f, x + 2, 153 + Math.floor(rn() * 2), 2 + Math.floor(rn() * 3), P.ivy[Math.floor(rn() * 3)]);
+    rect(f, P.bench, 12, 158, 26, 7); rect(f, P.fence2, 14, 160, 22, 2);
+    rect(f, P.bench, 10, 166, 30, 2); rect(f, P.bench, 12, 168, 2, 8); rect(f, P.bench, 36, 168, 2, 8);
+    rect(f, P.pot, 226, 169, 11, 8); rect(f, P.soil, 226, 169, 11, 1);
+    disc(f, 231, 164, 5, P.hyd); disc(f, 233, 162, 3, P.hyd2); disc(f, 227, 166, 2, P.ivy[0]);
+    rect(f, P.pot, 262, 171, 10, 6); disc(f, 267, 166, 4, P.ivy[1]); disc(f, 264, 164, 3, P.ivy[2]);
+  }
+
+  // ---- Mood (day or night) --------------------------------------------------------
+  var moodPref = store('bft-mood') || 'auto', moodNow = '';
+  var SUN = { 1:[8,16.2], 2:[7.3,17.2], 3:[6.3,18], 4:[6.3,20], 5:[5.3,20.8], 6:[4.8,21.4], 7:[5.1,21.2], 8:[6,20.3], 9:[6.8,19.2], 10:[7.3,18], 11:[7.3,16.3], 12:[8,15.9] };
+  function readPal(){
+    var cs = getComputedStyle(document.documentElement);
+    ['marker','pill','pilltext','glass','wheel'].forEach(function(k){ pal[k] = cs.getPropertyValue('--' + k).trim(); });
+    Object.keys(pal).forEach(function(k){ if (['marker','pill','pilltext','glass','wheel'].indexOf(k) < 0) delete pal[k]; });
+    Object.assign(pal, SCENE[moodNow]);
+    buildLayers();
+  }
+  function applyMood(now){
+    var p = londonParts(now), t = p.h + p.m/60, sun = SUN[p.mo] || [7,18];
+    var m = moodPref === 'auto' ? ((t >= sun[0] && t < sun[1]) ? 'day' : 'night') : moodPref;
+    if (m !== moodNow){
+      moodNow = m;
+      document.documentElement.setAttribute('data-mood', m);
+      readPal();
+    }
+    $('mood').textContent = 'Scene: ' + moodPref;
+  }
+
+  // ---- Pixel text (3x5) --------------------------------------------------
+  var GLYPH = {
+    '0':['111','101','101','101','111'], '1':['010','110','010','010','111'], '2':['111','001','111','100','111'],
+    '3':['111','001','111','001','111'], '4':['101','101','111','001','001'], '5':['111','100','111','001','111'],
+    '6':['111','100','111','101','111'], '7':['111','001','010','010','010'], '8':['111','101','111','101','111'],
+    '9':['111','101','111','001','111'], ':':['0','1','0','1','0'],
+    'N':['101','111','111','111','101'], 'O':['111','101','101','101','111'], 'W':['101','101','111','111','101'],
+    '<':['001','010','100','010','001'], '>':['100','010','001','010','100'], ' ':['00','00','00','00','00']
+  };
+  function textWidth(s){
+    var w = 0; for (var i = 0; i < s.length; i++){ w += GLYPH[s[i]][0].length + 1; } return w - 1;
+  }
+  function drawText(ctx, s, x, y, color){
+    ctx.fillStyle = color;
+    for (var i = 0; i < s.length; i++){
+      var g = GLYPH[s[i]]; if (!g) continue;
+      for (var r = 0; r < 5; r++) for (var c = 0; c < g[r].length; c++){
+        if (g[r][c] === '1') ctx.fillRect(x + c, y + r, 1, 1);
+      }
+      x += g[0].length + 1;
+    }
+  }
+  // Label sits on the train body so it is clear which train it belongs to.
+  function drawLabel(ctx, s, cx, y){
+    var w = textWidth(s) + 4, x = Math.round(cx - w/2);
+    x = Math.max(14, Math.min(CFG.W - w - 1, x));
+    rect(ctx, pal.pill, x, y, w, 9);
+    drawText(ctx, s, x + 2, y + 2, pal.pilltext);
+  }
+
+  // ---- Drawing -----------------------------------------------------------
+  function offsetPx(dt){
+    if (dt >= 0) return dt <= CFG.nearS ? CFG.nearPxPerS * dt : NEAR_PX + (dt - CFG.nearS) * FAR_K;
+    return CFG.nearPxPerS * dt;
+  }
+
+  function drawTrain(ctx, cx, dir, t, bob, railY){
+    var s = SVC[t.svc], n = s.cars, cw = 15, len = n*cw + (n-1), x0 = Math.round(cx - len/2), yb = railY - 13 + bob, i, w, x;
+    for (i = 0; i < n; i++){
+      x = x0 + i*(cw + 1);
+      rect(ctx, s.color, x, yb, cw, 11);
+      rect(ctx, s.stripe, x, yb + 7, cw, 1);
+      rect(ctx, pal.wheel, x, yb, cw, 1);
+      for (w = 0; w < 3; w++) rect(ctx, pal.glass, x + 2 + w*4, yb + 2, 3, 3);
+      rect(ctx, pal.wheel, x + 2, yb + 11, 3, 2); rect(ctx, pal.wheel, x + cw - 5, yb + 11, 3, 2);
+      if (i < n - 1) rect(ctx, pal.wheel, x + cw, yb + 8, 1, 1);
+    }
+    var fx = dir < 0 ? x0 : x0 + len - 2;
+    rect(ctx, pal.wheel, fx, yb + 1, 2, 5);
+    rect(ctx, '#ffe27a', dir < 0 ? x0 - 1 : x0 + len, yb + 8, 1, 2);
+  }
+
+  function frame(now, phase){
+    var ctx = sceneCtx; if (!ctx || !skyC) return;
+    ctx.drawImage(skyC, 0, 0);
+    if (pal.cloud){
+      CLOUDS.forEach(function(c){
+        var x = reduce ? c.x : ((c.x + now / 1000 * c.v) % (CFG.W + 80)) - 40;
+        rect(ctx, pal.cloud, x + 3, c.y, c.w - 6, 2); rect(ctx, pal.cloud, x, c.y + 2, c.w, 3); rect(ctx, pal.cloud2, x + 2, c.y + 5, c.w - 4, 1);
+      });
+    }
+    ctx.drawImage(frontC, 0, 0);
+    var bob = phase ? 1 : 0;
+    order.forEach(function(r, i){
+      var railY = RAILS[i], top = railY - 13, next = null;
+      if (flash[r.id] && flash[r.id] > now){
+        [WX - 9, WX + 9].forEach(function(px){ rect(ctx, '#ffffff', px - 2, top + 3, 5, 1); rect(ctx, '#ffffff', px, top + 1, 1, 5); });
+      }
+      trains.forEach(function(t){
+        if (t.row !== r.id) return;
+        var dt = (t.pass - now) / 1000, off = offsetPx(dt), cx = r.dir < 0 ? WX + off : WX - off;
+        var len = SVC[t.svc].cars * 16;
+        if (dt > 0 && !next) next = { t:t, dt:dt };
+        if (Math.abs(cx - WX) > WX + len/2) return;
+        drawTrain(ctx, cx, r.dir, t, bob, railY);
+        if (dt > -4 && dt <= 2) drawLabel(ctx, 'NOW', cx, top + 1);
+        else if (dt > 2) drawLabel(ctx, fmtCount(dt), cx, top + 1);
+      });
+      if (next && next.dt > CFG.fieldS){
+        var s = fmtCount(next.dt), arrow = r.dir < 0 ? '<' : '>';
+        drawLabel(ctx, r.dir < 0 ? s + ' ' + arrow : arrow + ' ' + s, r.dir < 0 ? CFG.W - 30 : 46, top + 1);
+      }
+    });
+    order.forEach(function(r, i){
+      rect(ctx, pal.pill, 2, RAILS[i] - 11, 9, 9);
+      drawText(ctx, String(i + 1), 5, RAILS[i] - 9, pal.pilltext);
+    });
+  }
+
+  // ---- Cards and text -------------------------------------------------------
+  // Nearest track to your window sits at the bottom of the scene and is the last card.
+  var flipped = store('bft-order') === 'flip';
+  function computeOrder(){
+    var base = side === 'east' ? ROWS.slice() : ROWS.slice().reverse();
+    return flipped ? base.reverse() : base;
+  }
+  var order = computeOrder();
+  function setScale(){
+    var north = 'Brockley, New Cross Gate', south = 'Honor Oak Park';
+    $('scaleL').textContent = side === 'east' ? '← ' + south : '← ' + north;
+    $('scaleR').textContent = side === 'east' ? north + ' →' : south + ' →';
+    $('side').textContent = 'Window side: ' + side;
+  }
+  var els = {};
+  function buildCards(){
+    var host = $('cards'); host.textContent = '';
+    ROWS.forEach(function(r){
+      var card = document.createElement('article'); card.className = 'card';
+      card.innerHTML = '<div class="chead"><span class="badge"></span><div><div class="rowname"></div><div class="rowsub"></div></div></div><div class="where"></div><div class="eta">--</div><div class="svc"></div><div class="then"></div><div class="adj"></div><button class="spot" type="button">A train just passed</button>';
+      card.querySelector('.rowname').textContent = r.name;
+      card.querySelector('.rowsub').textContent = r.sub;
+      els[r.id] = { card:card, badge:card.querySelector('.badge'), where:card.querySelector('.where'), eta:card.querySelector('.eta'), svc:card.querySelector('.svc'), then:card.querySelector('.then'), adj:card.querySelector('.adj') };
+      card.querySelector('.spot').addEventListener('click', function(){ logSighting(r.id); });
+    });
+    placeRows();
+  }
+  function placeRows(){
+    var host = $('cards');
+    order.forEach(function(r, i){
+      var e = els[r.id];
+      host.appendChild(e.card);
+      e.badge.textContent = String(i + 1);
+      e.where.textContent = i === order.length - 1 ? 'Track ' + (i + 1) + ', nearest your window' : i === 0 ? 'Track 1, furthest from your window' : 'Track ' + (i + 1);
+    });
+  }
+  function updateText(now, useLive){
+    ROWS.forEach(function(r){
+      var up = trains.filter(function(t){ return t.row === r.id && t.pass > now - 4000; });
+      var e = els[r.id];
+      if (!up.length){ e.eta.textContent = '--'; e.svc.textContent = 'Nothing due in the next 90 minutes'; e.then.textContent = ''; return; }
+      var t = up[0], dt = (t.pass - now)/1000;
+      var bk = r.id + ':' + (t.live ? 'live' : 'sim'), bn = biasN[bk];
+      e.adj.textContent = bn ? 'Nudged ' + (bias[bk] >= 0 ? '+' : '−') + Math.abs(Math.round(bias[bk])) + ' s from ' + bn + ' sighting' + (bn > 1 ? 's' : '') : '';
+      e.eta.textContent = dt <= 2 ? 'NOW' : fmtCount(dt);
+      e.svc.textContent = t.label + (t.live ? ' (live)' : '');
+      e.then.textContent = up.length > 1 ? 'then ' + up.slice(1,3).map(function(x){ return clockText(x.pass); }).join(', ') : '';
+    });
+    var pills = $('pills'), html;
+    var winPill = useLive
+      ? '<span class="pill live"><i></i>Windrush line: live from TfL</span>'
+      : '<span class="pill sim"><i></i>Windrush line: simulated' + (liveTried ? ' (the TfL feed could not be reached from this page)' : ' (checking the TfL feed)') + '</span>';
+    html = winPill + (nrLive
+      ? '<span class="pill live"><i></i>Southern stopping trains: live from National Rail</span><span class="pill sim"><i></i>Fast lines: simulated pattern</span>'
+      : '<span class="pill sim"><i></i>Southern and fast lines: simulated pattern</span>');
+    if (pills.getAttribute('data-h') !== html){ pills.innerHTML = html; pills.setAttribute('data-h', html); }
+  }
+
+  // ---- Your sightings --------------------------------------------------------
+  // Tap "A train just passed" and the time is stored. Each tap is matched to the nearest
+  // predicted train on that track; the typical gap between what was predicted and what you
+  // saw then nudges future predictions on that track.
+  var REACTION_S = 2, MATCH_MS = 240000;
+  var sightings = [], bias = {}, biasN = {}, dbCol = null, flash = {}, toastTimer = 0;
+
+  function localLoad(){
+    try { var s = localStorage.getItem('bft-sightings'); sightings = s ? JSON.parse(s) : []; } catch(e){ sightings = []; }
+  }
+  function localSave(){
+    try { localStorage.setItem('bft-sightings', JSON.stringify(sightings.slice(0, 500))); } catch(e){}
+  }
+  function rowName(id){
+    for (var i = 0; i < ROWS.length; i++) if (ROWS[i].id === id) return ROWS[i].name + ', ' + ROWS[i].sub.toLowerCase();
+    return id;
+  }
+  function clockSec(ms){
+    var p = londonParts(ms);
+    return String(p.h).padStart(2,'0') + ':' + String(p.m).padStart(2,'0') + ':' + String(p.s).padStart(2,'0');
+  }
+  function offsetPhrase(off){
+    var a = Math.abs(off);
+    if (a < 10) return 'within 10 s of the prediction';
+    var txt = a >= 90 ? (Math.round(a / 6) / 10) + ' min' : a + ' s';
+    return txt + (off > 0 ? ' later' : ' earlier') + ' than predicted';
+  }
+  function computeBias(){
+    var by = {};
+    bias = {}; biasN = {};
+    sightings.forEach(function(s){
+      if (s.off == null || !s.row) return;
+      var k = s.row + ':' + (s.src || 'sim');
+      (by[k] = by[k] || []).push(s);
+    });
+    Object.keys(by).forEach(function(k){
+      var arr = by[k].sort(function(a,b){ return b.t - a.t; }).slice(0, 12).map(function(s){ return s.off; }).sort(function(a,b){ return a - b; });
+      var n = arr.length, med = n % 2 ? arr[(n-1)/2] : (arr[n/2-1] + arr[n/2]) / 2;
+      bias[k] = Math.max(-240, Math.min(240, med * n / (n + 2)));
+      biasN[k] = n;
+    });
+  }
+  function renderLog(){
+    var ol = $('log'); ol.textContent = '';
+    $('logCount').textContent = '(' + sightings.length + ')';
+    sightings.slice(0, 20).forEach(function(s){
+      var li = document.createElement('li');
+      li.textContent = clockSec(s.t) + ' · ' + rowName(s.row) + ' · ' + (s.off == null ? 'no predicted train nearby' : s.label + ', ' + offsetPhrase(s.off)) + ' ';
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'x'; b.textContent = 'Remove';
+      b.setAttribute('aria-label', 'Remove the sighting at ' + clockSec(s.t));
+      b.addEventListener('click', function(){ removeSighting(s); });
+      li.appendChild(b); ol.appendChild(li);
+    });
+    var keys = Object.keys(bias);
+    $('learnNote').textContent = keys.length
+      ? 'Predictions are being nudged by what you have logged. The cards show the current adjustment.'
+      : 'Tap the button on a track each time a train passes. After a few taps the page nudges its predictions toward what you see.';
+    $('storeNote').textContent = dbCol
+      ? 'Sightings are saved to this page’s store, so they follow you across devices.'
+      : 'Sightings are saved on this device only.';
+  }
+  function sightingsChanged(){
+    sightings.sort(function(a,b){ return b.t - a.t; });
+    computeBias(); renderLog(); lastBuild = 0;
+  }
+  function showToast(msg, undo){
+    var el = $('toast'); el.textContent = '';
+    var sp = document.createElement('span'); sp.textContent = msg; el.appendChild(sp);
+    if (undo){
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = 'Undo';
+      b.addEventListener('click', function(){ undo(); el.hidden = true; });
+      el.appendChild(b);
+    }
+    el.hidden = false; clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.hidden = true; }, 9000);
+  }
+  function removeSighting(s){
+    if (s.local){
+      sightings = sightings.filter(function(x){ return x !== s; });
+      localSave(); sightingsChanged();
+    } else if (dbCol){
+      dbCol.doc(s.id).delete().catch(function(){ showToast('Could not remove that sighting. Try again.'); });
+    }
+  }
+  function logSighting(rowId){
+    var now = Date.now(), obs = now - REACTION_S * 1000, cand = null, best = 1e12;
+    trains.forEach(function(t){
+      if (t.row !== rowId) return;
+      var d = Math.abs(t.pass - obs);
+      if (d < best){ best = d; cand = t; }
+    });
+    var s = { t: obs, row: rowId };
+    var msg = 'Logged on ' + rowName(rowId) + ' at ' + clockSec(obs) + '. No train was predicted near that time.';
+    if (cand && best <= MATCH_MS){
+      s.svc = cand.svc; s.src = cand.live ? 'live' : 'sim'; s.label = cand.label; s.off = Math.round((obs - cand.raw) / 1000);
+      msg = 'Logged on ' + rowName(rowId) + ' at ' + clockSec(obs) + '. Matched to ' + cand.label + ', ' + offsetPhrase(s.off) + '.';
+    }
+    flash[rowId] = now + 700;
+    if (dbCol){
+      var ref = dbCol.doc();
+      ref.set(s).catch(function(){ showToast('Could not save that sighting. Try again.'); });
+      showToast(msg, function(){ ref.delete().catch(function(){}); });
+    } else {
+      s.local = true; s.id = 'l' + obs;
+      sightings.unshift(s); localSave(); sightingsChanged();
+      showToast(msg, function(){ removeSighting(s); });
+    }
+  }
+  function csvText(){
+    var lines = ['time_iso,row,service,source,offset_s'];
+    sightings.slice().sort(function(a,b){ return a.t - b.t; }).forEach(function(s){
+      lines.push([new Date(s.t).toISOString(), s.row, s.svc || '', s.src || '', s.off == null ? '' : s.off].join(','));
+    });
+    return lines.join('\n');
+  }
+  function initDb(){
+    if (!(window.claude && typeof window.claude.use === 'function')) return;
+    window.claude.use('db').then(function(db){
+      if (!db) return;
+      dbCol = db.collection('sightings');
+      dbCol.orderBy('t', 'desc').limit(500).onSnapshot(function(snap){
+        sightings = snap.docs.map(function(d){ var o = Object.assign({}, d.data()); o.id = d.id; return o; });
+        sightingsChanged();
+      }, function(){
+        dbCol = null; localLoad(); sightingsChanged();
+      });
+    }).catch(function(){ dbCol = null; });
+  }
+  $('copyCsv').addEventListener('click', function(){
+    var txt = csvText(), box = $('csvBox');
+    function fallback(){ box.value = txt; box.hidden = false; box.focus(); box.select(); }
+    try {
+      navigator.clipboard.writeText(txt).then(function(){ showToast('Copied ' + sightings.length + ' sightings.'); }, fallback);
+    } catch(e){ fallback(); }
+  });
+
+  // ---- Controls ---------------------------------------------------------------
+  $('flip').addEventListener('click', function(){
+    flipped = !flipped; order = computeOrder(); placeRows();
+    store('bft-order', flipped ? 'flip' : 'normal');
+  });
+  $('side').addEventListener('click', function(){
+    side = side === 'east' ? 'west' : 'east';
+    store('bft-side', side); applyDirs(); order = computeOrder(); placeRows(); setScale();
+  });
+  $('mood').addEventListener('click', function(){
+    moodPref = moodPref === 'auto' ? 'day' : moodPref === 'day' ? 'night' : 'auto';
+    store('bft-mood', moodPref); moodNow = ''; applyMood(Date.now());
+  });
+  $('simToggle').addEventListener('change', function(){ store('bft-sim', this.checked ? '1' : '0'); lastBuild = 0; });
+  if (store('bft-sim') === '0') $('simToggle').checked = false;
+
+  // ---- Main loop ----------------------------------------------------------------
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var lastBuild = 0, lastText = 0, useLive = false, lastPaint = 0;
+  function tick(ts){
+    var now = Date.now();
+    if (now - lastBuild > 1000){ useLive = rebuild(now); lastBuild = now; applyMood(now); }
+    if (now - lastText > 250){
+      lastText = now; updateText(now, useLive);
+      var p = londonParts(now);
+      $('clock').textContent = String(p.h).padStart(2,'0') + ':' + String(p.m).padStart(2,'0') + ':' + String(p.s).padStart(2,'0');
+    }
+    if (ts - lastPaint > (reduce ? 500 : 33)){
+      lastPaint = ts;
+      frame(now, reduce ? 0 : Math.floor(now / 170) % 2);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  sceneCtx = $('scene').getContext('2d'); sceneCtx.imageSmoothingEnabled = false;
+  buildCards();
+  applyMood(Date.now());
+  setScale();
+  localLoad(); sightingsChanged(); initDb();
+  if (typeof fetch === 'function') pullLive();
+  requestAnimationFrame(tick);
+
+  // Exposed for a quick check from the console.
+  window.__brockley = { genSim: genSim, APP: APP, offsetPx: offsetPx };
+})();
+</script>

@@ -1,0 +1,5 @@
+{
+  "functions": {
+    "api/trains.js": { "maxDuration": 15 }
+  }
+}
