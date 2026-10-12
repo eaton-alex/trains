@@ -192,43 +192,87 @@ function rttPasses(aServices, bServices) {
   });
   return out;
 }
+// ---- Request budget: RTT limits how often we may ask, so each answer is reused for a while ----
+const RTT_PASS_TTL = 60 * 1000;   // New Cross Gate and Sydenham passes
+const RTT_CALL_TTL = 120 * 1000;  // Brockley calls change less often
+const RTT_STALE_MAX = 15 * 60 * 1000; // keep using the last good answer this long if RTT refuses
+const rttStore = {};  // code -> { at, data }
+let rttBackoffUntil = 0;
+let rttRate = null;   // last rate-limit headers RTT sent
+
+async function rttFetch(url, headers) {
+  const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+  const rate = {};
+  r.headers.forEach((v, k) => { if (/^x-ratelimit/i.test(k)) rate[k] = v; });
+  if (Object.keys(rate).length) rttRate = rate;
+  if (r.status === 429) {
+    const ra = Number(r.headers.get('retry-after'));
+    rttBackoffUntil = Date.now() + (ra > 0 ? ra * 1000 : 90 * 1000);
+    throw new Error('HTTP 429');
+  }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (r.status === 204) return {};
+  return r.json();
+}
+// One location, answered from the store when it is fresh enough, or when RTT has told us to wait.
+async function rttLocation(code, ttl, detailed, h, force) {
+  const hit = rttStore[code], now = Date.now();
+  if (hit && !force && now - hit.at < ttl) return hit.data;
+  if (now < rttBackoffUntil) {
+    if (hit && now - hit.at < RTT_STALE_MAX) return Object.assign({}, hit.data, { _stale: true });
+    throw new Error('HTTP 429');
+  }
+  const base = RTT_BASE + '/gb-nr/location?code=' + encodeURIComponent(code) + '&timeWindow=60&timeTolerance=true';
+  let data, mode = 'plain';
+  try {
+    if (detailed) {
+      try { data = await rttFetch(base + '&detailed=true', h); mode = 'detailed'; }
+      catch (e) {
+        if (String(e.message) === 'HTTP 429') throw e;
+        mode = 'refused: ' + e.message; // not allowed detailed mode, so try the plain query
+        data = await rttFetch(base, h);
+      }
+    } else {
+      data = await rttFetch(base, h);
+    }
+  } catch (e) {
+    if (hit && Date.now() - hit.at < RTT_STALE_MAX) return Object.assign({}, hit.data, { _stale: true });
+    throw e;
+  }
+  data._mode = mode;
+  rttStore[code] = { at: Date.now(), data };
+  return data;
+}
 async function getRtt(debug) {
   if (!process.env.RTT_TOKEN) return { ok: false, enabled: false, trains: [], calls: [] };
-  if (!debug && rttCache.data && Date.now() - rttCache.at < 25000) return rttCache.data;
   try {
     const token = await rttToken();
     const h = { Authorization: 'Bearer ' + token };
-    const q = (code) => RTT_BASE + '/gb-nr/location?code=' + encodeURIComponent(code) + '&timeWindow=30&timeTolerance=true';
-    const one = (code) => getJson(q(code), h).catch((e) => ({ _error: String((e && e.message) || e) }));
-    // Passes need detailed mode. If the token is not allowed it, fall back to the plain query.
-    const det = { a: 'detailed', b: 'detailed' };
-    const two = async (code, k) => {
-      const r = await getJson(q(code) + '&detailed=true', h).catch((e) => ({ _error: String((e && e.message) || e) }));
-      if (!r._error) return r;
-      det[k] = 'refused: ' + r._error;
-      return one(code);
-    };
-    const [here, a, b, info] = await Promise.all([
-      one(RTT_CODE), two(RTT_A, 'a'), two(RTT_B, 'b'),
-      debug ? getJson(RTT_BASE + '/api/info', h).catch((e) => ({ _error: String((e && e.message) || e) })) : null
+    const settle = (p) => p.then((v) => ({ v }), (e) => ({ e: String((e && e.message) || e) }));
+    const [here, a, b] = await Promise.all([
+      settle(rttLocation(RTT_CODE, RTT_CALL_TTL, false, h, false)),
+      settle(rttLocation(RTT_A, RTT_PASS_TTL, true, h, false)),
+      settle(rttLocation(RTT_B, RTT_PASS_TTL, true, h, false))
     ]);
-    if (here._error && a._error && b._error) throw new Error(here._error);
-    const trains = rttPasses(a.services, b.services);
-    const calls = rttCalls(here.services);
-    const res = { ok: true, enabled: true, trains, calls };
-    if (here._error || a._error || b._error) res.partialErrors = { here: here._error, a: a._error, b: b._error };
+    if (here.e && a.e && b.e) throw new Error(a.e);
+    const A = a.v || {}, B = b.v || {}, H = here.v || {};
+    const res = { ok: true, enabled: true, trains: rttPasses(A.services, B.services), calls: rttCalls(H.services) };
+    const stale = !!(A._stale || B._stale || H._stale);
+    if (stale) res.stale = true;
+    if (here.e || a.e || b.e) res.partialErrors = { here: here.e, a: a.e, b: b.e };
     if (debug) {
       const tally = (r) => { const o = {}; (r.services || []).forEach((s) => { const k = (s.temporalData && s.temporalData.displayAs) || 'PASS'; o[k] = (o[k] || 0) + 1; }); return o; };
+      let info = null;
+      if (Date.now() >= rttBackoffUntil) info = await rttFetch(RTT_BASE + '/api/info', h).catch((e) => ({ _error: String((e && e.message) || e) }));
       res.sample = {
         codes: { here: RTT_CODE, a: RTT_A, b: RTT_B, frac: RTT_FRAC },
-        detailedMode: det,
+        detailedMode: { a: A._mode, b: B._mode },
+        rateLimits: rttRate,
+        backoffSeconds: Math.max(0, Math.round((rttBackoffUntil - Date.now()) / 1000)),
         info,
-        displayAs: { here: tally(here), a: tally(a), b: tally(b) },
-        firstPassAtA: (a.services || []).filter(rttIsPass).slice(0, 1),
-        firstPassAtB: (b.services || []).filter(rttIsPass).slice(0, 1)
+        displayAs: { here: tally(H), a: tally(A), b: tally(B) }
       };
     }
-    rttCache = { at: Date.now(), data: res };
     return res;
   } catch (e) {
     return { ok: false, enabled: true, error: String((e && e.message) || e), trains: [], calls: [] };
@@ -239,7 +283,7 @@ module.exports = async function handler(req, res) {
   const now = Date.now();
   const debug = req.query && req.query.debug === 'rtt';
   const [tfl, nr, rtt] = await Promise.all([getTfl(), getNr(now), getRtt(debug)]);
-  res.setHeader('Cache-Control', debug ? 'no-store' : 'public, s-maxage=20, stale-while-revalidate=40');
+  res.setHeader('Cache-Control', debug ? 'no-store' : 'public, s-maxage=45, stale-while-revalidate=120');
   res.status(200).json({ fetchedAt: now, tfl, nr, rtt });
 };
 module.exports.londonEpoch = londonEpoch;
