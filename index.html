@@ -35,6 +35,8 @@ h1{font-family:var(--display);font-weight:400;font-size:clamp(16px,3.4vw,24px);l
 .scale .r{text-align:right}
 .frame{background:var(--frame);border:8px solid var(--frame);border-bottom-width:16px;box-shadow:0 0 0 2px var(--line)}
 canvas#scene{display:block;width:100%;height:auto;aspect-ratio:320/180;image-rendering:pixelated;image-rendering:crisp-edges}
+.key{display:flex;flex-wrap:wrap;gap:6px 18px;list-style:none;margin:0;padding:0;font-size:13px;color:var(--muted)}
+.key i{display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:-1px;border:1px solid var(--ink)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
 .card{background:var(--panel);border:2px solid var(--line);padding:12px;display:flex;flex-direction:column;gap:2px;min-width:0}
 .chead{display:flex;gap:10px;align-items:center}
@@ -84,6 +86,13 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <div class="frame"><canvas id="scene" width="320" height="180" role="img" aria-label="Pixel-art view of four railway tracks with trains, nearest track at the bottom"></canvas></div>
   </section>
 
+  <ul class="key" aria-label="Train colours">
+    <li><i style="background:#d63b32"></i>Windrush line</li>
+    <li><i style="background:#2f9e5c"></i>Southern stopping</li>
+    <li><i style="background:#1b6a45"></i>Southern fast</li>
+    <li><i style="background:#2b4a9a"></i>Thameslink</li>
+  </ul>
+
   <section class="cards" id="cards" aria-label="Next train on each track"></section>
 
   <div class="controls">
@@ -107,7 +116,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   <details>
     <summary>How the times are worked out</summary>
     <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
-    <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from National Rail when that feed is set up. Everything else follows a repeating pattern based on the usual timetable, so treat it as a guide.</p>
+    <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from National Rail when that feed is set up. Everything else, including every Thameslink and Southern fast-line train, follows a placeholder pattern rather than the real timetable, so treat it as a guide.</p>
   </details>
 </main>
 
@@ -147,7 +156,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   var SVC = {
     wr: { color:'#d63b32', stripe:'#ffffff', cars:4 },
     st: { color:'#2f9e5c', stripe:'#e8f5ec', cars:3 },
-    fa: { color:'#1b6a45', stripe:'#f0c84b', cars:4 }
+    fa: { color:'#1b6a45', stripe:'#f0c84b', cars:4 },
+    th: { color:'#2b4a9a', stripe:'#f0f3fa', cars:5 }
   };
 
   // ---- Small helpers ---------------------------------------------------
@@ -179,6 +189,9 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   var WR_N = [7,14.5,22,29.5,37,44.5,52,59.5];
   var WR_S = [[2,'West Croydon'],[11,'Crystal Palace'],[17,'West Croydon'],[26,'Crystal Palace'],[32,'West Croydon'],[41,'Crystal Palace'],[47,'West Croydon'],[56,'Crystal Palace']];
 
+  // Placeholder Thameslink pass times (minutes past the hour, four an hour each way) until a real feed is connected.
+  var TH_N = [1,16,31,46], TH_S = [8.5,23.5,38.5,53.5];
+
   function genSim(now, withWindrush, withStopping){
     var out = [], h0 = Math.floor(now/3600000), h, i, base;
     for (h = h0-1; h <= h0+1; h++){
@@ -197,10 +210,15 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
       if (withStopping !== false) [7,37].forEach(function(mn){
         out.push({ row:'SS', svc:'st', label:'Southern stopping service', pass: base + mn*60000 + APP*1000, live:false });
       });
-      for (i = 0; i < 5; i++){
-        out.push({ row:'NF', svc:'fa', label:'Southern fast service', pass: base + (i*12 + 1 + rnd(h,i,1)*6)*60000, live:false });
-        out.push({ row:'SF', svc:'fa', label:'Southern fast service', pass: base + (i*12 + 4 + rnd(h,i,2)*6)*60000, live:false });
+      for (i = 0; i < 3; i++){
+        var tN = base + (i*20 + 2 + rnd(h,i,1)*9)*60000, tS = base + (i*20 + 6 + rnd(h,i,2)*9)*60000;
+        TH_N.forEach(function(mn){ if (Math.abs(tN - (base + mn*60000)) < 40000) tN += 80000; });
+        TH_S.forEach(function(mn){ if (Math.abs(tS - (base + mn*60000)) < 40000) tS += 80000; });
+        out.push({ row:'NF', svc:'fa', label:'Southern fast service', pass: tN, live:false });
+        out.push({ row:'SF', svc:'fa', label:'Southern fast service', pass: tS, live:false });
       }
+      TH_N.forEach(function(mn){ out.push({ row:'NF', svc:'th', label:'Thameslink towards Bedford or Cambridge', pass: base + mn*60000, live:false }); });
+      TH_S.forEach(function(mn){ out.push({ row:'SF', svc:'th', label:'Thameslink towards Brighton', pass: base + mn*60000, live:false }); });
     }
     return out;
   }
