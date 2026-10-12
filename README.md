@@ -24,6 +24,8 @@ Open `https://trains.smallgoblin.com/api/trains`. You should see JSON.
 - `nr.ok` is `true` when National Rail answered. If it is `false`, `nr.error` says why.
 - `nr.enabled` is `false` until `NR_API_KEY` is set.
 - `rtt.ok` is `true` when Realtime Trains answered. `rtt.enabled` is `false` until `RTT_TOKEN` is set.
+- Open `/api/trains?debug=nr` to see National Rail's raw first service and the URL used (the key is hidden).
+- When National Rail answers, Brockley's Southern stopping trains come from it and Realtime Trains is only asked about the fast lines, which saves requests.
 - Open `/api/trains?debug=rtt` to see the first raw services from Realtime Trains and how many came back each way.
 
 The page shows green "live" pills at the top for whichever feeds are working, and falls back to simulated times for the rest.

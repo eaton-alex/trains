@@ -80,7 +80,7 @@ async function getTfl() {
   }
 }
 
-async function getNr(now) {
+async function getNr(now, debug) {
   const key = process.env.NR_API_KEY;
   if (!key) return { ok: false, enabled: false, trains: [] };
   try {
@@ -98,7 +98,9 @@ async function getNr(now) {
       const dest = Array.isArray(s.destination) && s.destination[0] ? s.destination[0].locationName : '';
       trains.push({ platform: String(s.platform || ''), dep, destination: dest, operator: s.operator || '' });
     });
-    return { ok: true, enabled: true, trains };
+    const res = { ok: true, enabled: true, trains };
+    if (debug) res.sample = { url: url.replace(key, '***'), keys: Object.keys(j || {}), first: (j.trainServices || [])[0] || null, count: (j.trainServices || []).length };
+    return res;
   } catch (e) {
     return { ok: false, enabled: true, error: String((e && e.message) || e), trains: [] };
   }
@@ -270,13 +272,13 @@ async function rttLocation(code, ttl, detailed, h, force) {
   rttStore[code] = { at: Date.now(), data };
   return data;
 }
-async function getRtt(debug) {
+async function getRtt(debug, skipHere) {
   if (!rttKeys().length) return { ok: false, enabled: false, trains: [], calls: [] };
   try {
     const h = null;
     const settle = (p) => p.then((v) => ({ v }), (e) => ({ e: String((e && e.message) || e) }));
     const [here, a, b] = await Promise.all([
-      settle(rttLocation(RTT_CODE, RTT_CALL_TTL, false, h, false)),
+      skipHere ? Promise.resolve({ v: {} }) : settle(rttLocation(RTT_CODE, RTT_CALL_TTL, false, h, false)),
       settle(rttLocation(RTT_A, RTT_PASS_TTL, true, h, false)),
       settle(rttLocation(RTT_B, RTT_PASS_TTL, true, h, false))
     ]);
@@ -312,10 +314,14 @@ async function getRtt(debug) {
 
 module.exports = async function handler(req, res) {
   const now = Date.now();
-  const debug = req.query && req.query.debug === 'rtt';
-  const [tfl, nr, rtt] = await Promise.all([getTfl(), getNr(now), getRtt(debug)]);
-  res.setHeader('Cache-Control', debug ? 'no-store' : 'public, s-maxage=45, stale-while-revalidate=120');
-  res.status(200).json({ fetchedAt: now, tfl, nr, rtt });
+  const dbg = req.query && req.query.debug;
+  const debug = dbg === 'rtt';
+  // National Rail is not rate limited like Realtime Trains, so when it answers it covers Brockley's own
+  // Southern stopping trains and Realtime Trains is only asked about the fast lines.
+  const [tfl, nr] = await Promise.all([getTfl(), getNr(now, dbg === 'nr')]);
+  const rtt = await getRtt(debug, nr.ok);
+  res.setHeader('Cache-Control', dbg ? 'no-store' : 'public, s-maxage=45, stale-while-revalidate=120');
+  res.status(200).json({ fetchedAt: now, tfl, nr, rtt, ...(rtt.ok && nr.ok ? { stoppingFrom: 'nationalrail' } : {}) });
 };
 module.exports.londonEpoch = londonEpoch;
 module.exports.parseRtt = parseRtt;
