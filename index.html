@@ -116,7 +116,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <summary>How the times are worked out</summary>
     <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
     <p>No train runs to the second, so each prediction carries a window either side of it: 20 seconds for live Windrush times, 30 for live National Rail stopping trains, 60 for simulated stopping trains and 90 for simulated fast-line trains. While the clock is inside that window the track badge turns amber, the card says DUE, and a DUE tag sits at your window. The window settings are at the top of the script.</p>
-    <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from National Rail when that feed is set up. Thameslink and Southern fast-line trains come from Realtime Trains when that feed is set up. Anything without a live feed follows a placeholder pattern rather than the real timetable, so treat it as a guide.</p>
+    <p>Windrush line arrivals come from the TfL live feed whenever this page can reach it. Southern stopping trains come from Realtime Trains or National Rail when either is set up. Thameslink and Southern fast-line trains come from Realtime Trains when that feed is set up: it gives their times through New Cross Gate and Sydenham, and the page works out when each one reaches Brockley between them. Anything without a live feed follows a placeholder pattern rather than the real timetable, so treat it as a guide.</p>
   </details>
 </main>
 
@@ -239,7 +239,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     return out;
   }
 
-  var liveList = [], liveAt = 0, liveOk = false, liveNr = false, liveRtt = false, nrLive = false, rttLive = false, liveTried = false, failCount = 0, apiGone = false;
+  var liveList = [], liveAt = 0, liveOk = false, liveNr = false, liveRttFast = false, liveRttStop = false, nrLive = false, rttFastLive = false, liveTried = false, failCount = 0, apiGone = false;
   function tflToTrains(arr){
     var seen = {}, out = [];
     arr.forEach(function(p){
@@ -268,12 +268,18 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     return out;
   }
   // Realtime Trains: trains that pass Brockley without stopping (Thameslink and Southern fast lines)
-  function rttToTrains(list){
+  function rttToTrains(rtt){
     var out = [];
-    list.forEach(function(s){
+    (rtt.trains || []).forEach(function(s){
       if (!s.time) return;
       var tl = s.operator === 'TL', dest = s.destination || (s.dir === 'N' ? 'London' : 'the coast');
-      out.push({ row: s.dir === 'N' ? 'NF' : 'SF', svc: tl ? 'th' : 'fa', label: (tl ? 'Thameslink to ' : 'Southern fast to ') + dest, pass: s.time, live:true });
+      out.push({ row: s.dir === 'N' ? 'NF' : 'SF', svc: tl ? 'th' : 'fa', label: (tl ? 'Thameslink to ' : 'Southern fast to ') + dest, pass: s.time, live:true, src:'rtt' });
+    });
+    (rtt.calls || []).forEach(function(s){
+      if (!s.dep) return;
+      var dest = s.destination || 'London';
+      if (String(s.platform) === '1') out.push({ row:'NS', svc:'st', label:'Southern to ' + dest, pass: s.dep - (CFG.dwellS + APP)*1000, live:true, src:'rtt' });
+      else if (String(s.platform) === '2') out.push({ row:'SS', svc:'st', label:'Southern to ' + dest, pass: s.dep + APP*1000, live:true, src:'rtt' });
     });
     return out;
   }
@@ -284,7 +290,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     });
   }
   function direct(){
-    return getJson(CFG.tflUrl).then(function(arr){ return { list: tflToTrains(arr), tfl:true, nr:false, rtt:false }; });
+    return getJson(CFG.tflUrl).then(function(arr){ return { list: tflToTrains(arr), tfl:true, nr:false, rttFast:false, rttStop:false }; });
   }
   // On your own site the page asks /api/trains, which holds the keys. Anywhere else it asks TfL directly.
   function pullOnce(){
@@ -293,10 +299,10 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
         var haveTfl = !!(j && j.tfl && j.tfl.ok), haveNr = !!(j && j.nr && j.nr.ok);
         if (!haveTfl && !haveNr && !(j && j.rtt && j.rtt.ok)) throw new Error('no data');
         var haveRtt = !!(j && j.rtt && j.rtt.ok), out = [];
-        if (haveRtt) out = out.concat(rttToTrains(j.rtt.trains || []));
+        if (haveRtt) out = out.concat(rttToTrains(j.rtt));
         if (haveTfl) out = out.concat(tflToTrains(j.tfl.trains || []));
         if (haveNr) out = out.concat(nrToTrains(j.nr.trains || []));
-        return { list: out, tfl: haveTfl, nr: haveNr, rtt: haveRtt };
+        return { list: out, tfl: haveTfl, nr: haveNr, rttFast: haveRtt && (j.rtt.trains || []).length > 0, rttStop: haveRtt && (j.rtt.calls || []).length > 0 };
       }).catch(function(e){
         if (/404/.test(String(e && e.message))) apiGone = true;
         return direct();
@@ -306,21 +312,26 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   }
   function pullLive(){
     pullOnce().then(function(r){
-      liveList = r.list; liveAt = Date.now(); liveOk = r.tfl; liveNr = r.nr; liveRtt = !!r.rtt; liveTried = true; failCount = 0;
+      liveList = r.list; liveAt = Date.now(); liveOk = r.tfl; liveNr = r.nr; liveRttFast = !!r.rttFast; liveRttStop = !!r.rttStop; liveTried = true; failCount = 0;
     }).catch(function(){
-      liveOk = false; liveNr = false; liveRtt = false; liveTried = true; failCount++;
+      liveOk = false; liveNr = false; liveRttFast = false; liveRttStop = false; liveTried = true; failCount++;
     }).then(function(){
       setTimeout(pullLive, failCount > 2 ? 120000 : 30000);
     });
   }
 
-  var trains = [];
+  var trains = [], nrSrc = 'National Rail';
   function rebuild(now){
     var fresh = (now - liveAt) < 150000;
-    var useLive = liveOk && fresh, useNr = liveNr && fresh, useRtt = liveRtt && fresh;
-    nrLive = useNr; rttLive = useRtt;
-    var live = liveList.filter(function(t){ return t.svc === 'wr' ? useLive : (t.svc === 'st' ? useNr : useRtt); });
-    var list = live.concat(genSim(now, !useLive, !useNr, !useRtt));
+    var useLive = liveOk && fresh, useNr = liveNr && fresh, useFast = liveRttFast && fresh, useStopRtt = liveRttStop && fresh && !useNr;
+    nrLive = useNr || useStopRtt; rttFastLive = useFast;
+    nrSrc = useNr ? 'National Rail' : 'Realtime Trains';
+    var live = liveList.filter(function(t){
+      if (t.svc === 'wr') return useLive;
+      if (t.svc === 'st') return t.src === 'rtt' ? useStopRtt : useNr;
+      return useFast;
+    });
+    var list = live.concat(genSim(now, !useLive, !nrLive, !useFast));
     var simOn = $('simToggle').checked;
     trains = list.map(function(t){
       var raw = t.raw != null ? t.raw : t.pass;
@@ -625,9 +636,9 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
       ? '<span class="pill live"><i></i>Windrush line: live from TfL</span>'
       : '<span class="pill sim"><i></i>Windrush line: simulated' + (liveTried ? ' (the TfL feed could not be reached from this page)' : ' (checking the TfL feed)') + '</span>';
     var nrPill = nrLive
-      ? '<span class="pill live"><i></i>Southern stopping trains: live from National Rail</span>'
+      ? '<span class="pill live"><i></i>Southern stopping trains: live from ' + nrSrc + '</span>'
       : '<span class="pill sim"><i></i>Southern stopping trains: simulated</span>';
-    var fastPill = rttLive
+    var fastPill = rttFastLive
       ? '<span class="pill live"><i></i>Fast lines: live from Realtime Trains</span>'
       : '<span class="pill sim"><i></i>Fast lines: simulated pattern</span>';
     html = winPill + nrPill + fastPill;

@@ -88,10 +88,15 @@ async function getNr(now) {
 }
 
 
-// ---- Realtime Trains (next generation API): trains that pass Brockley without stopping ----
+// ---- Realtime Trains (next generation API) ----
+// Brockley itself only lists trains that stop here, so for the fast lines we ask for the
+// passes at New Cross Gate and Sydenham either side (timing points) and work out where
+// each train is when it goes by Brockley.
 const RTT_BASE = 'https://data.rtt.io';
 const RTT_CODE = process.env.RTT_LOCATION || 'BCY';
-const RTT_LONDON = 'LBG'; // London Bridge: every train on these lines runs to or from it
+const RTT_A = process.env.RTT_PASS_A || 'NXG'; // towards London, timing point
+const RTT_B = process.env.RTT_PASS_B || 'SYD'; // towards Brighton, timing point
+const RTT_FRAC = Number(process.env.RTT_FRAC) || 0.2; // how far Brockley is from A towards B, as a share of the A to B time
 let rttAccess = null; // { token, until }
 let rttCache = { at: 0, data: null };
 
@@ -115,42 +120,72 @@ function rttTime(td) {
   const t = v ? Date.parse(v) : NaN;
   return Number.isNaN(t) ? null : t;
 }
-function rttMap(services, dir) {
+function rttOp(s) { return (s.scheduleMetadata && s.scheduleMetadata.operator) || {}; }
+function rttDest(s) { return (s.destination && s.destination[0] && s.destination[0].location && s.destination[0].location.description) || ''; }
+function rttId(s) { return (s.scheduleMetadata && (s.scheduleMetadata.uniqueIdentity || s.scheduleMetadata.identity)) || ''; }
+function rttIsPass(s) { const d = s.temporalData && s.temporalData.displayAs; return !d || d === 'PASS'; }
+
+// Trains calling at Brockley (Southern; Overground comes from TfL)
+function rttCalls(services) {
   const out = [];
   (services || []).forEach((s) => {
-    const td = s.temporalData || {};
-    const shown = td.displayAs || 'PASS';
-    if (shown !== 'PASS') return; // calling trains come from TfL and National Rail
-    const t = rttTime(td.pass) || rttTime(td.departure) || rttTime(td.arrival);
-    if (!t) return;
-    const op = (s.scheduleMetadata && s.scheduleMetadata.operator) || {};
+    if (rttIsPass(s)) return;
+    const op = rttOp(s);
     if (op.code === 'LO') return;
-    const dest = (s.destination && s.destination[0] && s.destination[0].location && s.destination[0].location.description) || '';
+    const td = s.temporalData || {};
+    const platform = String((s.locationMetadata && s.locationMetadata.platform && (s.locationMetadata.platform.forecast || s.locationMetadata.platform.planned)) || '');
+    const dep = rttTime(td.departure);
+    if (!dep || (platform !== '1' && platform !== '2')) return;
+    out.push({ platform, dep, operator: op.code || '', destination: rttDest(s), identity: (s.scheduleMetadata && s.scheduleMetadata.trainReportingIdentity) || '' });
+  });
+  return out;
+}
+// Trains that pass New Cross Gate and Sydenham without stopping, placed at Brockley
+function rttPasses(aServices, bServices) {
+  const aMap = {};
+  (aServices || []).forEach((s) => { if (rttIsPass(s)) { const t = rttTime(s.temporalData.pass); if (t) aMap[rttId(s)] = { t, s }; } });
+  const out = [];
+  (bServices || []).forEach((s) => {
+    if (!rttIsPass(s)) return;
+    const tb = rttTime(s.temporalData.pass), a = aMap[rttId(s)];
+    if (!tb || !a) return;
+    const op = rttOp(s);
+    if (op.code === 'LO') return;
     out.push({
-      dir, time: t, operator: op.code || '', operatorName: op.name || '', destination: dest,
-      identity: (s.scheduleMetadata && s.scheduleMetadata.trainReportingIdentity) || ''
+      dir: tb > a.t ? 'S' : 'N', // reaches Sydenham after New Cross Gate means heading away from London
+      time: Math.round(a.t + RTT_FRAC * (tb - a.t)),
+      operator: op.code || '', destination: rttDest(s), identity: (s.scheduleMetadata && s.scheduleMetadata.trainReportingIdentity) || ''
     });
   });
   return out;
 }
 async function getRtt(debug) {
-  if (!process.env.RTT_TOKEN) return { ok: false, enabled: false, trains: [] };
+  if (!process.env.RTT_TOKEN) return { ok: false, enabled: false, trains: [], calls: [] };
   if (!debug && rttCache.data && Date.now() - rttCache.at < 25000) return rttCache.data;
   try {
     const token = await rttToken();
     const h = { Authorization: 'Bearer ' + token };
-    const q = '/gb-nr/location?code=' + encodeURIComponent(RTT_CODE) + '&timeWindow=30&timeTolerance=true';
-    const [north, south] = await Promise.all([
-      getJson(RTT_BASE + q + '&filterTo=' + RTT_LONDON, h),
-      getJson(RTT_BASE + q + '&filterFrom=' + RTT_LONDON, h)
-    ]);
-    const trains = rttMap(north.services, 'N').concat(rttMap(south.services, 'S'));
-    const res = { ok: true, enabled: true, trains };
-    if (debug) res.sample = { north: (north.services || []).slice(0, 2), south: (south.services || []).slice(0, 2), counts: { north: (north.services || []).length, south: (south.services || []).length } };
+    const q = (code) => RTT_BASE + '/gb-nr/location?code=' + encodeURIComponent(code) + '&timeWindow=30&timeTolerance=true';
+    const one = (code) => getJson(q(code), h).catch((e) => ({ _error: String((e && e.message) || e) }));
+    const [here, a, b] = await Promise.all([one(RTT_CODE), one(RTT_A), one(RTT_B)]);
+    if (here._error && a._error && b._error) throw new Error(here._error);
+    const trains = rttPasses(a.services, b.services);
+    const calls = rttCalls(here.services);
+    const res = { ok: true, enabled: true, trains, calls };
+    if (here._error || a._error || b._error) res.partialErrors = { here: here._error, a: a._error, b: b._error };
+    if (debug) {
+      const tally = (r) => { const o = {}; (r.services || []).forEach((s) => { const k = (s.temporalData && s.temporalData.displayAs) || 'PASS'; o[k] = (o[k] || 0) + 1; }); return o; };
+      res.sample = {
+        codes: { here: RTT_CODE, a: RTT_A, b: RTT_B, frac: RTT_FRAC },
+        displayAs: { here: tally(here), a: tally(a), b: tally(b) },
+        firstPassAtA: (a.services || []).filter(rttIsPass).slice(0, 1),
+        firstPassAtB: (b.services || []).filter(rttIsPass).slice(0, 1)
+      };
+    }
     rttCache = { at: Date.now(), data: res };
     return res;
   } catch (e) {
-    return { ok: false, enabled: true, error: String((e && e.message) || e), trains: [] };
+    return { ok: false, enabled: true, error: String((e && e.message) || e), trains: [], calls: [] };
   }
 }
 
