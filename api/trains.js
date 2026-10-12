@@ -5,6 +5,7 @@
 //   TFL_APP_KEY   your TfL app key (optional, raises the rate limit)
 //   NR_API_KEY    your Rail Data Marketplace key for the Live Departure Board
 //   RTT_TOKEN     your Realtime Trains (next generation) token, a refresh token or a long-life access token.
+//   RTT_TOKEN_2   optional second token, used only if the first has an outage or an authorisation problem.
 //   RTT_LOCATION  optional. Station code to query, default BCY (Brockley).
 //   NR_LDB_URL    optional. The board URL exactly as shown on your Rail Data Marketplace
 //                 subscription page, with {crs} where the station code goes.
@@ -113,21 +114,23 @@ const RTT_CODE = process.env.RTT_LOCATION || 'BCY';
 const RTT_A = process.env.RTT_PASS_A || 'NXG'; // towards London, timing point
 const RTT_B = process.env.RTT_PASS_B || 'SYD'; // towards Brighton, timing point
 const RTT_FRAC = Number(process.env.RTT_FRAC) || 0.2; // how far Brockley is from A towards B, as a share of the A to B time
-let rttAccess = null; // { token, until }
-let rttCache = { at: 0, data: null };
+const rttAccess = {}; // token index -> { token, until }
+const rttBadUntil = {}; // token index -> time before which we avoid it after a failure
 
-async function rttToken() {
-  const key = process.env.RTT_TOKEN;
+function rttKeys() { return [process.env.RTT_TOKEN, process.env.RTT_TOKEN_2].filter(Boolean); }
+async function rttToken(i) {
+  const key = rttKeys()[i];
   if (!key) return null;
-  if (rttAccess && rttAccess.until > Date.now() + 60000) return rttAccess.token;
+  const hit = rttAccess[i];
+  if (hit && hit.until > Date.now() + 60000) return hit.token;
   try {
     const j = await getJson(RTT_BASE + '/api/get_access_token', { Authorization: 'Bearer ' + key });
     if (j && j.token) {
-      rttAccess = { token: j.token, until: parseRtt(j.validUntil) || Date.now() + 10 * 60000 };
-      return rttAccess.token;
+      rttAccess[i] = { token: j.token, until: parseRtt(j.validUntil) || Date.now() + 10 * 60000 };
+      return rttAccess[i].token;
     }
   } catch (e) { /* a long-life access token is not exchanged, so use it as is */ }
-  rttAccess = { token: key, until: Date.now() + 10 * 60000 };
+  rttAccess[i] = { token: key, until: Date.now() + 10 * 60000 };
   return key;
 }
 function rttTime(td) {
@@ -200,11 +203,12 @@ const rttStore = {};  // code -> { at, data }
 let rttBackoffUntil = 0;
 let rttRate = null;   // last rate-limit headers RTT sent
 
-async function rttFetch(url, headers) {
-  const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+async function rttFetchWith(i, url) {
+  const token = await rttToken(i);
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(8000) });
   const rate = {};
-  r.headers.forEach((v, k) => { if (/^x-ratelimit/i.test(k)) rate[k] = v; });
-  if (Object.keys(rate).length) rttRate = rate;
+  r.headers.forEach((v, k) => { if (/^x-ratelimit/i.test(k)) rate['token' + (i + 1) + ' ' + k] = v; });
+  if (Object.keys(rate).length) rttRate = Object.assign(rttRate || {}, rate);
   if (r.status === 429) {
     const ra = Number(r.headers.get('retry-after'));
     rttBackoffUntil = Date.now() + (ra > 0 ? ra * 1000 : 90 * 1000);
@@ -213,6 +217,28 @@ async function rttFetch(url, headers) {
   if (!r.ok) throw new Error('HTTP ' + r.status);
   if (r.status === 204) return {};
   return r.json();
+}
+// Uses the first token. If it fails with an outage or an authorisation problem (not a rate limit),
+// the same request goes to the second token, and the first is left alone for ten minutes.
+let rttUsed = 0;
+async function rttFetch(url) {
+  const n = rttKeys().length, order = [];
+  for (let k = 0; k < n; k++) { const i = (rttUsed + k) % n; if (!(rttBadUntil[i] > Date.now()) || k === n - 1) order.push(i); }
+  let lastErr;
+  for (const i of order) {
+    try {
+      const j = await rttFetchWith(i, url);
+      rttUsed = i;
+      return j;
+    } catch (e) {
+      lastErr = e;
+      if (String(e.message) === 'HTTP 429') throw e; // respect the limit rather than hop around it
+      if (/HTTP (4\d\d)/.test(String(e.message)) && !/HTTP (401|403)/.test(String(e.message))) throw e; // our own bad request
+      rttBadUntil[i] = Date.now() + 10 * 60 * 1000;
+      rttAccess[i] = null;
+    }
+  }
+  throw lastErr;
 }
 // One location, answered from the store when it is fresh enough, or when RTT has told us to wait.
 async function rttLocation(code, ttl, detailed, h, force) {
@@ -226,14 +252,14 @@ async function rttLocation(code, ttl, detailed, h, force) {
   let data, mode = 'plain';
   try {
     if (detailed) {
-      try { data = await rttFetch(base + '&detailed=true', h); mode = 'detailed'; }
+      try { data = await rttFetch(base + '&detailed=true'); mode = 'detailed'; }
       catch (e) {
         if (String(e.message) === 'HTTP 429') throw e;
         mode = 'refused: ' + e.message; // not allowed detailed mode, so try the plain query
-        data = await rttFetch(base, h);
+        data = await rttFetch(base);
       }
     } else {
-      data = await rttFetch(base, h);
+      data = await rttFetch(base);
     }
   } catch (e) {
     if (hit && Date.now() - hit.at < RTT_STALE_MAX) return Object.assign({}, hit.data, { _stale: true });
@@ -244,10 +270,9 @@ async function rttLocation(code, ttl, detailed, h, force) {
   return data;
 }
 async function getRtt(debug) {
-  if (!process.env.RTT_TOKEN) return { ok: false, enabled: false, trains: [], calls: [] };
+  if (!rttKeys().length) return { ok: false, enabled: false, trains: [], calls: [] };
   try {
-    const token = await rttToken();
-    const h = { Authorization: 'Bearer ' + token };
+    const h = null;
     const settle = (p) => p.then((v) => ({ v }), (e) => ({ e: String((e && e.message) || e) }));
     const [here, a, b] = await Promise.all([
       settle(rttLocation(RTT_CODE, RTT_CALL_TTL, false, h, false)),
@@ -263,11 +288,12 @@ async function getRtt(debug) {
     if (debug) {
       const tally = (r) => { const o = {}; (r.services || []).forEach((s) => { const k = (s.temporalData && s.temporalData.displayAs) || 'PASS'; o[k] = (o[k] || 0) + 1; }); return o; };
       let info = null;
-      if (Date.now() >= rttBackoffUntil) info = await rttFetch(RTT_BASE + '/api/info', h).catch((e) => ({ _error: String((e && e.message) || e) }));
+      if (Date.now() >= rttBackoffUntil) info = await rttFetch(RTT_BASE + '/api/info').catch((e) => ({ _error: String((e && e.message) || e) }));
       res.sample = {
         codes: { here: RTT_CODE, a: RTT_A, b: RTT_B, frac: RTT_FRAC },
         detailedMode: { a: A._mode, b: B._mode },
         rateLimits: rttRate,
+        tokens: { configured: rttKeys().length, lastUsed: rttUsed + 1, avoidedForSeconds: Object.keys(rttBadUntil).map((i) => Math.max(0, Math.round((rttBadUntil[i] - Date.now()) / 1000))) },
         backoffSeconds: Math.max(0, Math.round((rttBackoffUntil - Date.now()) / 1000)),
         info,
         displayAs: { here: tally(H), a: tally(A), b: tally(B) }

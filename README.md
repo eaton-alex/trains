@@ -10,6 +10,7 @@ A single page (`index.html`) plus one server function (`api/trains.js`) that hol
    - `TFL_APP_KEY`: your TfL key.
    - `NR_API_KEY`: your Rail Data Marketplace key (add it once you have it).
    - `RTT_TOKEN`: your Realtime Trains (next generation) token from api-portal.rtt.io. This gives the Southern stopping trains and the Thameslink and Southern fast-line trains. Fast trains are timed at New Cross Gate and Sydenham, then placed at Brockley between them.
+   - `RTT_TOKEN_2`: optional second Realtime Trains token. It is used only if the first one has an outage or an authorisation problem, never to get round a rate limit.
    - `RTT_LOCATION`, `RTT_PASS_A`, `RTT_PASS_B`, `RTT_FRAC`: optional. Defaults are `BCY`, `NXG`, `SYD` and `0.2` (Brockley sits about a fifth of the way from New Cross Gate to Sydenham).
    - `NR_LDB_URL`: only if the default does not work. Copy the board URL from your Rail Data Marketplace subscription page and put `{crs}` where the station code goes.
 4. Redeploy so the variables take effect.
