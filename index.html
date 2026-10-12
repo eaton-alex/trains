@@ -137,6 +137,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     slackStopS: 30,     // live National Rail stopping trains (dwell time varies)
     slackSimS: 60,      // simulated stopping trains
     slackFastS: 90,     // simulated fast-line trains
+    quietFromH: 1,      // London hour when the page rests (no feeds, no simulated trains)
+    quietToH: 5,        // London hour when it wakes up again
     fieldS: 150,        // how far ahead the scene looks, in seconds
     W: 320, H: 180,
     tflUrl: 'https://api.tfl.gov.uk/StopPoint/910GBROCKLY/Arrivals'
@@ -187,6 +189,10 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     var f = new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/London', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false, month:'numeric' });
     var o = {}; f.formatToParts(new Date(ms)).forEach(function(p){ o[p.type] = p.value; });
     return { h:+o.hour % 24, m:+o.minute, s:+o.second, mo:+o.month };
+  }
+  function isQuiet(ms){
+    var h = londonParts(ms).h;
+    return h >= CFG.quietFromH && h < CFG.quietToH;
   }
   function clockText(ms){
     var p = londonParts(ms);
@@ -313,6 +319,12 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     return direct();
   }
   function pullLive(){
+    if (isQuiet(Date.now())){
+      // Resting hours: ask nobody for anything, look again in 30 seconds.
+      liveList = []; liveOk = liveNr = liveRttFast = liveRttStop = false;
+      setTimeout(pullLive, 30000);
+      return;
+    }
     pullOnce().then(function(r){
       liveList = r.list; liveAt = Date.now(); liveOk = r.tfl; liveNr = r.nr; liveRttFast = !!r.rttFast; liveRttStop = !!r.rttStop; liveTried = true; failCount = 0;
     }).catch(function(){
@@ -324,6 +336,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 
   var trains = [], nrSrc = 'National Rail';
   function rebuild(now){
+    if (isQuiet(now)){ trains = []; nrLive = false; rttFastLive = false; return false; }
     var fresh = (now - liveAt) < 150000;
     var useLive = liveOk && fresh, useNr = liveNr && fresh, useFast = liveRttFast && fresh, useStopRtt = liveRttStop && fresh && !useNr;
     nrLive = useNr || useStopRtt; rttFastLive = useFast;
@@ -624,7 +637,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     ROWS.forEach(function(r){
       var up = trains.filter(function(t){ return t.row === r.id && t.pass > now - t.slack*1000; });
       var e = els[r.id];
-      if (!up.length){ e.eta.textContent = '--'; e.svc.textContent = 'Nothing due in the next 90 minutes'; e.then.textContent = ''; return; }
+      if (!up.length){ e.eta.textContent = '--'; e.svc.textContent = isQuiet(now) ? 'Resting until ' + String(CFG.quietToH).padStart(2,'0') + ':00' : 'Nothing due in the next 90 minutes'; e.then.textContent = ''; return; }
       var t = up[0], dt = (t.pass - now)/1000;
       var bk = r.id + ':' + (t.live ? 'live' : 'sim'), bn = biasN[bk];
       var win = 'Expect it within ' + fmtSlack(t.slack) + ' either side of ' + clockText(t.pass) + '.';
@@ -644,6 +657,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
       ? '<span class="pill live"><i></i>Fast lines: live from Realtime Trains</span>'
       : '<span class="pill sim"><i></i>Fast lines: simulated pattern</span>';
     html = winPill + nrPill + fastPill;
+    if (isQuiet(now)) html = '<span class="pill sim"><i></i>Resting until ' + String(CFG.quietToH).padStart(2,'0') + ':00. No trains are shown and no feeds are asked.</span>';
     if (pills.getAttribute('data-h') !== html){ pills.innerHTML = html; pills.setAttribute('data-h', html); }
   }
 
