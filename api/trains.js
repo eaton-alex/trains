@@ -154,6 +154,8 @@ function rttCalls(services) {
     const op = rttOp(s);
     if (op.code === 'LO') return;
     const td = s.temporalData || {};
+    // A cancelled or diverted train will not come by, so it is left out.
+    if (!/^(CALL|STARTS|TERMINATES)$/.test(td.displayAs || '') || (td.departure && td.departure.isCancelled)) return;
     const platform = String((s.locationMetadata && s.locationMetadata.platform && (s.locationMetadata.platform.forecast || s.locationMetadata.platform.planned)) || '');
     const dep = rttTime(td.departure);
     if (!dep || (platform !== '1' && platform !== '2')) return;
@@ -178,6 +180,8 @@ function rttPasses(aServices, bServices) {
     if (!as) return;
     const op = rttOp(s);
     if (op.code === 'LO') return;
+    const cancelled = (x) => { const p = x.temporalData && x.temporalData.pass; return p && p.isCancelled; };
+    if (cancelled(as) || cancelled(s)) return;
     const A = rttPoint(as), B = rttPoint(s);
     // Direction comes from the timetable, which is always there, not from reported times that may be missing at one end.
     const dirBasis = (A.sched && B.sched) ? [A.sched, B.sched] : [A.real || A.sched, B.real || B.sched];
