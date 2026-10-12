@@ -141,19 +141,36 @@ function rttCalls(services) {
   return out;
 }
 // Trains that pass New Cross Gate and Sydenham without stopping, placed at Brockley
+function rttPoint(s) {
+  const p = (s.temporalData && s.temporalData.pass) || {};
+  const sched = Date.parse(p.scheduleInternal || p.scheduleAdvertised || '');
+  const real = Date.parse(p.realtimeActual || p.realtimeForecast || p.realtimeEstimate || '');
+  return { sched: Number.isNaN(sched) ? null : sched, real: Number.isNaN(real) ? null : real };
+}
 function rttPasses(aServices, bServices) {
   const aMap = {};
-  (aServices || []).forEach((s) => { if (rttIsPass(s)) { const t = rttTime(s.temporalData.pass); if (t) aMap[rttId(s)] = { t, s }; } });
+  (aServices || []).forEach((s) => { if (rttIsPass(s)) aMap[rttId(s)] = s; });
   const out = [];
   (bServices || []).forEach((s) => {
     if (!rttIsPass(s)) return;
-    const tb = rttTime(s.temporalData.pass), a = aMap[rttId(s)];
-    if (!tb || !a) return;
+    const as = aMap[rttId(s)];
+    if (!as) return;
     const op = rttOp(s);
     if (op.code === 'LO') return;
+    const A = rttPoint(as), B = rttPoint(s);
+    // Direction comes from the timetable, which is always there, not from reported times that may be missing at one end.
+    const dirBasis = (A.sched && B.sched) ? [A.sched, B.sched] : [A.real || A.sched, B.real || B.sched];
+    if (!dirBasis[0] || !dirBasis[1]) return;
+    // If only one end has a report, carry its lateness over to the other end so the two times are comparable.
+    let ta = A.real, tb = B.real;
+    if (ta == null && tb != null && A.sched && B.sched) ta = A.sched + (tb - B.sched);
+    if (tb == null && ta != null && A.sched && B.sched) tb = B.sched + (ta - A.sched);
+    if (ta == null) ta = A.sched;
+    if (tb == null) tb = B.sched;
+    if (!ta || !tb) return;
     out.push({
-      dir: tb > a.t ? 'S' : 'N', // reaches Sydenham after New Cross Gate means heading away from London
-      time: Math.round(a.t + RTT_FRAC * (tb - a.t)),
+      dir: dirBasis[1] > dirBasis[0] ? 'S' : 'N', // reaches Sydenham after New Cross Gate means heading away from London
+      time: Math.round(ta + RTT_FRAC * (tb - ta)),
       operator: op.code || '', destination: rttDest(s), identity: (s.scheduleMetadata && s.scheduleMetadata.trainReportingIdentity) || ''
     });
   });
