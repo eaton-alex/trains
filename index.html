@@ -87,10 +87,9 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   </section>
 
   <ul class="key" aria-label="Train colours">
-    <li><i style="background:#d63b32"></i>Windrush line</li>
-    <li><i style="background:#2f9e5c"></i>Southern stopping</li>
-    <li><i style="background:#1b6a45"></i>Southern fast</li>
-    <li><i style="background:#2b4a9a"></i>Thameslink</li>
+    <li><i style="background:linear-gradient(#f08c1e 50%,#1d2a78 50%)"></i>Windrush line (Overground)</li>
+    <li><i style="background:linear-gradient(#e8ebe9 50%,#2fa66a 50%)"></i>Southern</li>
+    <li><i style="background:linear-gradient(#e3e7eb 50%,#3a9bd8 50%)"></i>Thameslink</li>
   </ul>
 
   <section class="cards" id="cards" aria-label="Next train on each track"></section>
@@ -153,12 +152,19 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     ROWS.forEach(function(r){ r.dir = (r.id.charAt(0) === 'N' ? -1 : 1) * (side === 'east' ? -1 : 1); });
   }
   applyDirs();
+  // Liveries: wr = Overground (Class 378), st/fa = Southern (Class 377), th = Thameslink (Class 700)
   var SVC = {
-    wr: { color:'#d63b32', stripe:'#ffffff', cars:4 },
-    st: { color:'#2f9e5c', stripe:'#e8f5ec', cars:3 },
-    fa: { color:'#1b6a45', stripe:'#f0c84b', cars:4 },
-    th: { color:'#2b4a9a', stripe:'#f0f3fa', cars:5 }
+    wr: { livery:'og', cars:5 },
+    st: { livery:'so', cars:4 },
+    fa: { livery:'so', cars:4 },
+    th: { livery:'tl', cars:6 }
   };
+  var LIV = {
+    og: { body:'#f3f3f0', roof:'#cfd3d6', door:'#f08c1e', line:'#f08c1e', skirt:'#1d2a78', skirtRows:3, cab:'#f6d62a', cabW:2 },
+    so: { body:'#e8ebe9', roof:'#c6cbc9', door:'#2fa66a', line:'#f2c500', skirt:'#2a9a5c', skirtRows:2, cab:'#2fa66a', cabW:3, nose:'#f2c500' },
+    tl: { body:'#e3e7eb', roof:'#2c3a52', door:'#3a9bd8', line:'#c7dc52', skirt:'#555b66', skirtRows:1, cab:'#e3e7eb', cabW:2 }
+  };
+
 
   // ---- Small helpers ---------------------------------------------------
   function $(id){ return document.getElementById(id); }
@@ -470,18 +476,34 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   }
 
   function drawTrain(ctx, cx, dir, t, bob, railY){
-    var s = SVC[t.svc], n = s.cars, cw = 15, len = n*cw + (n-1), x0 = Math.round(cx - len/2), yb = railY - 13 + bob, i, w, x;
+    var s = SVC[t.svc], L = LIV[s.livery], n = s.cars, cw = 15, len = n*cw + (n-1), x0 = Math.round(cx - len/2), yb = railY - 13 + bob, i, x, k;
+    var night = moodNow === 'night', win = night ? pal.glass : '#27333f', frontI = dir < 0 ? 0 : n - 1;
     for (i = 0; i < n; i++){
       x = x0 + i*(cw + 1);
-      rect(ctx, s.color, x, yb, cw, 11);
-      rect(ctx, s.stripe, x, yb + 7, cw, 1);
-      rect(ctx, pal.wheel, x, yb, cw, 1);
-      for (w = 0; w < 3; w++) rect(ctx, pal.glass, x + 2 + w*4, yb + 2, 3, 3);
+      var front = (i === frontI), back = (i === (dir < 0 ? n - 1 : 0));
+      rect(ctx, L.body, x, yb, cw, 11);
+      rect(ctx, L.roof, x, yb, cw, 1);
+      // skirt along the bottom
+      rect(ctx, L.skirt, x, yb + 11 - L.skirtRows, cw, L.skirtRows);
+      // window band, then doors over it
+      rect(ctx, win, x + 1, yb + 2, cw - 2, 4);
+      rect(ctx, L.line, x, yb + 6, cw, 1);
+      [3, 9].forEach(function(dx){
+        rect(ctx, L.door, x + dx, yb + 1, 4, 8);
+        rect(ctx, win, x + dx + 1, yb + 3, 2, 3);
+        rect(ctx, '#2a2f38', x + dx + 1, yb + 3, 1, 3);
+      });
+      // cab end on the leading car
+      if (front){
+        var cx0 = dir < 0 ? x : x + cw - L.cabW;
+        rect(ctx, L.cab, cx0, yb + (s.livery === 'tl' ? 1 : 0), L.cabW, 10);
+        if (L.nose) rect(ctx, L.nose, dir < 0 ? x : x + cw - 1, yb + 1, 1, 8);
+        rect(ctx, win, dir < 0 ? x + L.cabW : x + cw - L.cabW - 1, yb + 2, 1, 4);
+        if (s.livery === 'tl') rect(ctx, win, dir < 0 ? x : x + cw - 2, yb + 2, 2, 4);
+      }
       rect(ctx, pal.wheel, x + 2, yb + 11, 3, 2); rect(ctx, pal.wheel, x + cw - 5, yb + 11, 3, 2);
       if (i < n - 1) rect(ctx, pal.wheel, x + cw, yb + 8, 1, 1);
     }
-    var fx = dir < 0 ? x0 : x0 + len - 2;
-    rect(ctx, pal.wheel, fx, yb + 1, 2, 5);
     rect(ctx, '#ffe27a', dir < 0 ? x0 - 1 : x0 + len, yb + 8, 1, 2);
   }
 
