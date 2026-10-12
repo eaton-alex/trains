@@ -167,7 +167,18 @@ async function getRtt(debug) {
     const h = { Authorization: 'Bearer ' + token };
     const q = (code) => RTT_BASE + '/gb-nr/location?code=' + encodeURIComponent(code) + '&timeWindow=30&timeTolerance=true';
     const one = (code) => getJson(q(code), h).catch((e) => ({ _error: String((e && e.message) || e) }));
-    const [here, a, b] = await Promise.all([one(RTT_CODE), one(RTT_A), one(RTT_B)]);
+    // Passes need detailed mode. If the token is not allowed it, fall back to the plain query.
+    const det = { a: 'detailed', b: 'detailed' };
+    const two = async (code, k) => {
+      const r = await getJson(q(code) + '&detailed=true', h).catch((e) => ({ _error: String((e && e.message) || e) }));
+      if (!r._error) return r;
+      det[k] = 'refused: ' + r._error;
+      return one(code);
+    };
+    const [here, a, b, info] = await Promise.all([
+      one(RTT_CODE), two(RTT_A, 'a'), two(RTT_B, 'b'),
+      debug ? getJson(RTT_BASE + '/api/info', h).catch((e) => ({ _error: String((e && e.message) || e) })) : null
+    ]);
     if (here._error && a._error && b._error) throw new Error(here._error);
     const trains = rttPasses(a.services, b.services);
     const calls = rttCalls(here.services);
@@ -177,6 +188,8 @@ async function getRtt(debug) {
       const tally = (r) => { const o = {}; (r.services || []).forEach((s) => { const k = (s.temporalData && s.temporalData.displayAs) || 'PASS'; o[k] = (o[k] || 0) + 1; }); return o; };
       res.sample = {
         codes: { here: RTT_CODE, a: RTT_A, b: RTT_B, frac: RTT_FRAC },
+        detailedMode: det,
+        info,
         displayAs: { here: tally(here), a: tally(a), b: tally(b) },
         firstPassAtA: (a.services || []).filter(rttIsPass).slice(0, 1),
         firstPassAtB: (b.services || []).filter(rttIsPass).slice(0, 1)
