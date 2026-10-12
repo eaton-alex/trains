@@ -211,6 +211,7 @@ async function rttFetchWith(i, url) {
   if (Object.keys(rate).length) rttRate = Object.assign(rttRate || {}, rate);
   if (r.status === 429) {
     const ra = Number(r.headers.get('retry-after'));
+    rttRate = Object.assign(rttRate || {}, { 'last429 retry-after': r.headers.get('retry-after') });
     rttBackoffUntil = Date.now() + (ra > 0 ? ra * 1000 : 90 * 1000);
     throw new Error('HTTP 429');
   }
@@ -301,7 +302,11 @@ async function getRtt(debug) {
     }
     return res;
   } catch (e) {
-    return { ok: false, enabled: true, error: String((e && e.message) || e), trains: [], calls: [] };
+    return {
+      ok: false, enabled: true, error: String((e && e.message) || e), trains: [], calls: [],
+      retryAfterSeconds: Math.max(0, Math.round((rttBackoffUntil - Date.now()) / 1000)),
+      rateLimits: rttRate, tokensConfigured: rttKeys().length
+    };
   }
 }
 
