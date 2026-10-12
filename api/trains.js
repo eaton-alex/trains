@@ -36,6 +36,22 @@ function londonEpoch(hhmm, now) {
   return t;
 }
 
+
+// RTT sends times like "2026-10-12T16:05:30" with no zone, meaning London time.
+// Strings that do carry a zone ("Z" or an offset) are read as they are.
+function parseRtt(str) {
+  if (!str) return NaN;
+  const v = String(str);
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(v)) return Date.parse(v);
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(v);
+  if (!m) return Date.parse(v);
+  const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+  const g = londonParts(asUtc);
+  const shown = Date.UTC(+g.year, +g.month - 1, +g.day, +g.hour % 24, +g.minute);
+  const offset = shown - Math.floor(asUtc / 60000) * 60000; // London minus UTC at that moment
+  return asUtc - offset;
+}
+
 async function getJson(url, headers) {
   const r = await fetch(url, { headers: headers || {}, signal: AbortSignal.timeout(8000) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -107,7 +123,7 @@ async function rttToken() {
   try {
     const j = await getJson(RTT_BASE + '/api/get_access_token', { Authorization: 'Bearer ' + key });
     if (j && j.token) {
-      rttAccess = { token: j.token, until: Date.parse(j.validUntil) || Date.now() + 10 * 60000 };
+      rttAccess = { token: j.token, until: parseRtt(j.validUntil) || Date.now() + 10 * 60000 };
       return rttAccess.token;
     }
   } catch (e) { /* a long-life access token is not exchanged, so use it as is */ }
@@ -117,7 +133,7 @@ async function rttToken() {
 function rttTime(td) {
   if (!td) return null;
   const v = td.realtimeActual || td.realtimeForecast || td.realtimeEstimate || td.scheduleInternal || td.scheduleAdvertised;
-  const t = v ? Date.parse(v) : NaN;
+  const t = v ? parseRtt(v) : NaN;
   return Number.isNaN(t) ? null : t;
 }
 function rttOp(s) { return (s.scheduleMetadata && s.scheduleMetadata.operator) || {}; }
@@ -143,8 +159,8 @@ function rttCalls(services) {
 // Trains that pass New Cross Gate and Sydenham without stopping, placed at Brockley
 function rttPoint(s) {
   const p = (s.temporalData && s.temporalData.pass) || {};
-  const sched = Date.parse(p.scheduleInternal || p.scheduleAdvertised || '');
-  const real = Date.parse(p.realtimeActual || p.realtimeForecast || p.realtimeEstimate || '');
+  const sched = parseRtt(p.scheduleInternal || p.scheduleAdvertised || '');
+  const real = parseRtt(p.realtimeActual || p.realtimeForecast || p.realtimeEstimate || '');
   return { sched: Number.isNaN(sched) ? null : sched, real: Number.isNaN(real) ? null : real };
 }
 function rttPasses(aServices, bServices) {
@@ -227,3 +243,4 @@ module.exports = async function handler(req, res) {
   res.status(200).json({ fetchedAt: now, tfl, nr, rtt });
 };
 module.exports.londonEpoch = londonEpoch;
+module.exports.parseRtt = parseRtt;
