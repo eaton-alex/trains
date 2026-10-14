@@ -123,7 +123,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 
   <details id="autobox">
     <summary>Listen for trains (auto-spot)</summary>
-    <p>Put a spare phone on the windowsill with this page open and press Start listening. It hears each train go by and logs it as a sighting, matched to the nearest predicted train, so the predictions correct themselves without any tapping. Nothing is recorded or sent anywhere: the page only measures how loud it is.</p>
+    <p>Put a spare phone on the windowsill with this page open. The camera is the accurate one: it logs each train as a sighting, matched to the nearest predicted train, so the predictions correct themselves without any tapping. The microphone is a rougher second opinion: in testing it reacted about 40 seconds before the train reached the window, so its sightings are shown in the log but not used to adjust the predictions. Nothing is recorded or sent anywhere: the page only measures how loud it is.</p>
     <div class="controls">
       <button id="spotBtn" type="button">Start listening</button>
       <label class="chk" for="spotSens">Sensitivity
@@ -148,7 +148,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <p id="spotStatus">Not listening.</p>
     <p id="spotCount"></p>
     <p>Keep the device plugged in and the screen on (the page asks the phone to stay awake). Wind, rain on the glass and loud passers-by can fool it, so it only logs a train when a predicted one was due within about a minute on exactly one track. If it logs trains that did not pass, lower the sensitivity; if it misses them, raise it. Auto-spot rests from 01:00 to 05:00 like the rest of the page. When the shared store is set up, sightings from every device are used by every device.</p>
-    <p>The camera works differently: it watches two thin strips either side of the middle of the picture. The order they light up gives the direction (so it knows north from south) and the moment the front of the train crosses the middle gives the time. Point the phone straight out of the window, square on to the tracks, with the sky and trees in the top third if you can; “Watch the lower two thirds” then ignores them. Use “Dim the screen” to turn the display black while it keeps watching. Run the camera and the microphone together and the camera is used when it sees a train, the microphone when it does not.</p>
+    <p>The camera works differently: it watches two thin strips either side of the middle of the picture. The order they light up gives the direction (so it knows north from south) and the moment the front of the train crosses the middle gives the time. Point the phone straight out of the window, square on to the tracks, with the sky and trees in the top third if you can; “Watch the lower two thirds” then ignores them. Use “Dim the screen” to turn the display black while it keeps watching. If the camera and microphone both log the same train, the camera’s sighting replaces the microphone’s.</p>
   </details>
 
   <details>
@@ -732,7 +732,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     var by = {};
     bias = {}; biasN = {};
     sightings.forEach(function(s){
-      if (s.off == null || !s.row) return;
+      if (s.off == null || !s.row || s.via === 'mic') return; // the microphone hears trains well before they reach the window, so it is logged but not trusted for timing
       var k = s.row + ':' + (s.src || 'sim');
       (by[k] = by[k] || []).push(s);
     });
@@ -748,7 +748,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     $('logCount').textContent = '(' + sightings.length + ')';
     sightings.slice(0, 20).forEach(function(s){
       var li = document.createElement('li');
-      li.textContent = clockSec(s.t) + (s.via === 'mic' ? ' · heard' : '') + ' · ' + rowName(s.row) + ' · ' + (s.off == null ? 'no predicted train nearby' : s.label + ', ' + offsetPhrase(s.off)) + ' ';
+      li.textContent = clockSec(s.t) + (s.via === 'mic' ? ' · heard (not used for timing)' : s.via === 'cam' ? ' · seen' : '') + ' · ' + rowName(s.row) + ' · ' + (s.off == null ? 'no predicted train nearby' : s.label + ', ' + offsetPhrase(s.off)) + ' ';
       var b = document.createElement('button'); b.type = 'button'; b.className = 'x'; b.textContent = 'Remove';
       b.setAttribute('aria-label', 'Remove the sighting at ' + clockSec(s.t));
       b.addEventListener('click', function(){ removeSighting(s); });
@@ -925,6 +925,9 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     if (!cands.length){ spot.skipped++; say(what + 'No train was predicted near then, so it was not logged.'); return; }
     var best = cands[0], clash = cands.filter(function(c){ return c.t.row !== best.t.row && c.d <= best.d + AUTO_AMBIG_MS; })[0];
     if (clash){ spot.skipped++; say(what + 'Two tracks had a train due at about that time, so it was not logged.'); return; }
+    var same = sightings.filter(function(x){ return x.row === best.t.row && x.label === best.t.label && Math.abs(x.t - obs) < 120000; });
+    if (!isCam && same.length){ spot.skipped++; say(what + 'That train already has a sighting, so this was not logged again.'); return; }
+    if (isCam) same.filter(function(x){ return x.via === 'mic'; }).forEach(removeSighting);
     var s = { t: obs, row: best.t.row, via: via, svc: best.t.svc, src: best.t.live ? 'live' : 'sim', label: best.t.label, off: Math.round((obs - best.t.raw) / 1000) };
     spot.heard++;
     flash[s.row] = Date.now() + 700;
