@@ -40,3 +40,12 @@ Without the Claude artifact store, the "A train just passed" button keeps taps i
 Open the page on a spare phone, expand "Listen for trains (auto-spot)" and press Start listening. The page measures how loud it is (nothing is recorded), turns each rise of several dB into a train event, matches it to the nearest predicted train and logs a sighting. Sightings stay on that device. It rests from 01:00 to 05:00.
 
 The same section can also watch through the camera: two thin strips either side of the middle of the picture give the direction of travel and the moment the front of a train crosses. Video is analysed on the device and never stored or sent.
+
+## Shared sightings (Supabase)
+
+Sightings from taps, the microphone and the camera are kept in Supabase so every device uses them. The table `public.bft_sightings` already exists (row level security on, no public policies). Add two environment variables in Vercel and redeploy:
+
+- `SUPABASE_URL` the project URL, e.g. https://lwhhsiipekybrtbqvibp.supabase.co
+- `SUPABASE_SERVICE_KEY` the service_role (secret) key, from Supabase > Project Settings > API Keys. It stays on the server.
+
+Check it with `/api/sightings`: it should say `"enabled": true`. Until then the page keeps sightings on each device. Sightings already saved on a device are moved to the shared store the first time that device loads the page with it enabled.

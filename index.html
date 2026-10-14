@@ -147,7 +147,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <p id="spotLevel" role="status">Not listening</p>
     <p id="spotStatus">Not listening.</p>
     <p id="spotCount"></p>
-    <p>Keep the device plugged in and the screen on (the page asks the phone to stay awake). Wind, rain on the glass and loud passers-by can fool it, so it only logs a train when a predicted one was due within about a minute on exactly one track. If it logs trains that did not pass, lower the sensitivity; if it misses them, raise it. Auto-spot rests from 01:00 to 05:00 like the rest of the page. Sightings are kept on the device that heard them.</p>
+    <p>Keep the device plugged in and the screen on (the page asks the phone to stay awake). Wind, rain on the glass and loud passers-by can fool it, so it only logs a train when a predicted one was due within about a minute on exactly one track. If it logs trains that did not pass, lower the sensitivity; if it misses them, raise it. Auto-spot rests from 01:00 to 05:00 like the rest of the page. When the shared store is set up, sightings from every device are used by every device.</p>
     <p>The camera works differently: it watches two thin strips either side of the middle of the picture. The order they light up gives the direction (so it knows north from south) and the moment the front of the train crosses the middle gives the time. Point the phone straight out of the window, square on to the tracks, with the sky and trees in the top third if you can; “Watch the lower two thirds” then ignores them. Use “Dim the screen” to turn the display black while it keeps watching. Run the camera and the microphone together and the camera is used when it sees a train, the microphone when it does not.</p>
   </details>
 
@@ -706,13 +706,13 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   // predicted train on that track; the typical gap between what was predicted and what you
   // saw then nudges future predictions on that track.
   var REACTION_S = 2, MATCH_MS = 240000;
-  var sightings = [], bias = {}, biasN = {}, dbCol = null, flash = {}, toastTimer = 0;
+  var sightings = [], bias = {}, biasN = {}, dbCol = null, apiOn = false, flash = {}, toastTimer = 0;
 
   function localLoad(){
     try { var s = localStorage.getItem('bft-sightings'); sightings = s ? JSON.parse(s) : []; } catch(e){ sightings = []; }
   }
   function localSave(){
-    try { localStorage.setItem('bft-sightings', JSON.stringify(sightings.slice(0, 500))); } catch(e){}
+    try { localStorage.setItem('bft-sightings', JSON.stringify(sightings.filter(function(x){ return x.local; }).slice(0, 500))); } catch(e){}
   }
   function rowName(id){
     for (var i = 0; i < ROWS.length; i++) if (ROWS[i].id === id) return ROWS[i].name + ', ' + ROWS[i].sub.toLowerCase();
@@ -758,8 +758,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     $('learnNote').textContent = keys.length
       ? 'Predictions are being nudged by what you have logged. The cards show the current adjustment.'
       : 'Tap the button on a track each time a train passes. After a few taps the page nudges its predictions toward what you see.';
-    $('storeNote').textContent = dbCol
-      ? 'Sightings are saved to this page’s store, so they follow you across devices.'
+    $('storeNote').textContent = dbCol || apiOn
+      ? 'Sightings are saved to a shared store, so every device uses them.'
       : 'Sightings are saved on this device only.';
   }
   function sightingsChanged(){
@@ -781,6 +781,10 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     if (s.local){
       sightings = sightings.filter(function(x){ return x !== s; });
       localSave(); sightingsChanged();
+    } else if (s.api){
+      sightings = sightings.filter(function(x){ return x !== s; }); sightingsChanged();
+      if (/^pending/.test(String(s.id))){ s.removeWhenSaved = true; return; }
+      fetch('/api/sightings?id=' + encodeURIComponent(s.id), { method:'DELETE' }).then(function(r){ if (!r.ok) throw new Error('x'); }).catch(function(){ showToast('Could not remove that from the shared store. Try again.'); apiLoad(); });
     } else if (dbCol){
       dbCol.doc(s.id).delete().catch(function(){ showToast('Could not remove that sighting. Try again.'); });
     }
@@ -801,18 +805,59 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     flash[rowId] = now + 700;
     commitSighting(s, msg);
   }
+  function apiBody(s){ return { t:s.t, row:s.row, via:s.via || 'tap', svc:s.svc, src:s.src, label:s.label, off:s.off }; }
   function commitSighting(s, msg){
     if (dbCol){
       var ref = dbCol.doc();
       ref.set(s).catch(function(){ showToast('Could not save that sighting. Try again.'); });
       showToast(msg, function(){ ref.delete().catch(function(){}); });
+    } else if (apiOn){
+      s.api = true; s.id = 'pending' + s.t;
+      sightings.unshift(s); sightingsChanged();
+      showToast(msg, function(){ removeSighting(s); });
+      fetch('/api/sightings', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(apiBody(s)) })
+        .then(function(r){ if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
+        .then(function(j){
+          s.id = j.ids && j.ids[0] ? j.ids[0] : s.id;
+          if (s.removeWhenSaved) removeSighting(s);
+        })
+        .catch(function(){
+          s.api = false; s.local = true; s.id = 'l' + s.t; localSave(); sightingsChanged();
+          showToast('Saved on this device only, the shared store could not be reached.');
+        });
     } else {
       s.local = true; s.id = 'l' + s.t;
       sightings.unshift(s); localSave(); sightingsChanged();
       showToast(msg, function(){ removeSighting(s); });
     }
   }
-
+  // The shared store (Supabase, through /api/sightings). Sightings from every device end up here.
+  function apiLoad(){
+    return fetch('/api/sightings', { cache:'no-store' }).then(function(r){ return r.ok ? r.json() : null; }).then(function(j){
+      if (!j || !j.enabled) return false;
+      var local = sightings.filter(function(x){ return x.local; });
+      sightings = (j.sightings || []).map(function(x){ x.api = true; return x; }).concat(local);
+      apiOn = true; sightingsChanged();
+      return true;
+    }).catch(function(){ return false; });
+  }
+  function initApi(){
+    if (dbCol || apiGone || !/^https?:$/.test(location.protocol) || typeof fetch !== 'function') return;
+    apiLoad().then(function(on){
+      if (!on) return;
+      var mine = sightings.filter(function(x){ return x.local; }).slice(0, 200);
+      if (mine.length){
+        fetch('/api/sightings', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(mine.map(apiBody)) })
+          .then(function(r){ if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
+          .then(function(){
+            sightings = sightings.filter(function(x){ return !x.local; }); localSave();
+            return apiLoad();
+          }).then(function(){ showToast('Moved ' + mine.length + ' sightings from this device to the shared store.'); })
+          .catch(function(){});
+      }
+      setInterval(function(){ if (!document.hidden) apiLoad(); }, 300000);
+    });
+  }
   // ---- Auto-spot: listen for trains with this device's microphone --------------------
   // <detector>
   // Turns a stream of sound levels (dB, one every 0.1 s) into "a train went past" events.
@@ -1151,7 +1196,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   buildCards();
   applyMood(Date.now());
   setScale();
-  localLoad(); sightingsChanged(); initDb();
+  localLoad(); sightingsChanged(); initDb(); initApi();
   if (typeof fetch === 'function') pullLive();
   requestAnimationFrame(tick);
 
