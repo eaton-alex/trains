@@ -64,6 +64,11 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 #log li{margin-block:4px;overflow-wrap:anywhere}
 #log .x{font-size:12px;padding:2px 8px;box-shadow:none}
 .csv{width:100%;margin-top:10px;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;background:var(--page);color:var(--ink);border:2px solid var(--line);padding:8px}
+.camview{display:block;width:100%;max-width:320px;image-rendering:pixelated;border:2px solid var(--line);margin:10px 0}
+.camview[hidden]{display:none}
+.vhide{position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none}
+.dim{position:fixed;inset:0;z-index:20;background:#000;color:#2a2a2a;display:grid;place-items:center;font-size:14px}
+.dim[hidden]{display:none}
 .meter{height:10px;border:2px solid var(--line);background:var(--panel);margin:10px 0}
 .meter i{display:block;height:100%;width:0;background:var(--marker)}
 #autobox select{font:inherit;margin-left:6px}
@@ -104,6 +109,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <label class="chk" for="simToggle"><input id="simToggle" type="checkbox" checked> Show simulated trains</label>
   </div>
 
+  <div id="dim" class="dim" hidden>Tap to wake</div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <details id="logbox">
@@ -124,11 +130,25 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
         <select id="spotSens"><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select>
       </label>
     </div>
+    <div class="controls">
+      <button id="camBtn" type="button">Start watching (camera)</button>
+      <label class="chk" for="camNorth">Northbound trains cross the picture
+        <select id="camNorth"><option value="right">left to right</option><option value="left">right to left</option></select>
+      </label>
+      <label class="chk" for="camArea">Watch
+        <select id="camArea"><option value="0">the whole picture</option><option value="0.33">the lower two thirds</option><option value="0.5">the lower half</option></select>
+      </label>
+      <button id="dimBtn" type="button">Dim the screen</button>
+    </div>
+    <canvas id="camView" class="camview" width="160" height="90" hidden aria-label="Camera preview with the two watch strips"></canvas>
+    <video id="camVideo" class="vhide" playsinline muted></video>
+    <p id="camStatus">Camera is off.</p>
     <div class="meter" aria-hidden="true"><i id="spotBar"></i></div>
     <p id="spotLevel" role="status">Not listening</p>
     <p id="spotStatus">Not listening.</p>
     <p id="spotCount"></p>
     <p>Keep the device plugged in and the screen on (the page asks the phone to stay awake). Wind, rain on the glass and loud passers-by can fool it, so it only logs a train when a predicted one was due within about a minute on exactly one track. If it logs trains that did not pass, lower the sensitivity; if it misses them, raise it. Auto-spot rests from 01:00 to 05:00 like the rest of the page. Sightings are kept on the device that heard them.</p>
+    <p>The camera works differently: it watches two thin strips either side of the middle of the picture. The order they light up gives the direction (so it knows north from south) and the moment the front of the train crosses the middle gives the time. Point the phone straight out of the window, square on to the tracks, with the sky and trees in the top third if you can; “Watch the lower two thirds” then ignores them. Use “Dim the screen” to turn the display black while it keeps watching. Run the camera and the microphone together and the camera is used when it sees a train, the microphone when it does not.</p>
   </details>
 
   <details>
@@ -840,26 +860,33 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 
   var SPOT_SENS = { high:6, normal:9, low:12 };
   var AUTO_MATCH_MS = 75000, AUTO_AMBIG_MS = 15000;
-  var spot = { on:false, ctx:null, stream:null, timer:0, det:null, lock:null, heard:0, skipped:0, lastMeter:0, lastText:'' };
+  var spot = { camObs:0, on:false, ctx:null, stream:null, timer:0, det:null, lock:null, heard:0, skipped:0, lastMeter:0, lastText:'' };
   function spotSens(){ var v = store('bft-spot-sens'); return SPOT_SENS[v] ? v : 'normal'; }
   function spotSay(msg){ var el = $('spotStatus'); if (el) el.textContent = msg; }
-  function heardTrain(ev){
-    var obs = Math.round(ev.center - CFG.micFrontS * 1000), cands = [];
+  // One heard or seen event becomes a sighting. rows limits the match to the tracks that could
+  // have caused it (the camera knows the direction, the microphone does not).
+  function heardTrain(ev, via, rows){
+    var isCam = via === 'cam', obs = Math.round(isCam ? ev.center : ev.center - CFG.micFrontS * 1000), cands = [];
+    if (isCam) spot.camObs = obs;
+    else if (spot.camObs && Math.abs(obs - spot.camObs) < 30000) return; // the camera already dealt with this one
     trains.forEach(function(t){
+      if (rows && rows.indexOf(t.row) < 0) return;
       var d = Math.abs(t.pass - obs);
       if (d <= AUTO_MATCH_MS) cands.push({ t:t, d:d });
     });
     cands.sort(function(a,b){ return a.d - b.d; });
-    var when = clockSec(obs), what = 'Heard something at ' + when + ' (' + ev.peakDb + ' dB over the background, ' + ev.durS + ' s). ';
-    if (!cands.length){ spot.skipped++; spotSay(what + 'No train was predicted near then, so it was not logged.'); return; }
+    var when = clockSec(obs), verb = isCam ? 'Saw' : 'Heard';
+    var what = verb + ' something at ' + when + (isCam ? ' going ' + (ev.dir === 'R' ? 'left to right' : 'right to left') : ' (' + ev.peakDb + ' dB over the background, ' + ev.durS + ' s)') + '. ';
+    if (!cands.length){ spot.skipped++; say(what + 'No train was predicted near then, so it was not logged.'); return; }
     var best = cands[0], clash = cands.filter(function(c){ return c.t.row !== best.t.row && c.d <= best.d + AUTO_AMBIG_MS; })[0];
-    if (clash){ spot.skipped++; spotSay(what + 'Two tracks had a train due at about that time, so it was not logged.'); return; }
-    var s = { t: obs, row: best.t.row, via: 'mic', svc: best.t.svc, src: best.t.live ? 'live' : 'sim', label: best.t.label, off: Math.round((obs - best.t.raw) / 1000) };
+    if (clash){ spot.skipped++; say(what + 'Two tracks had a train due at about that time, so it was not logged.'); return; }
+    var s = { t: obs, row: best.t.row, via: via, svc: best.t.svc, src: best.t.live ? 'live' : 'sim', label: best.t.label, off: Math.round((obs - best.t.raw) / 1000) };
     spot.heard++;
     flash[s.row] = Date.now() + 700;
-    var msg = 'Heard ' + best.t.label + ' on ' + rowName(s.row) + ' at ' + when + ', ' + offsetPhrase(s.off) + '.';
-    spotSay(msg);
+    var msg = verb + ' ' + best.t.label + ' on ' + rowName(s.row) + ' at ' + when + ', ' + offsetPhrase(s.off) + '.';
+    say(msg);
     commitSighting(s, msg);
+    function say(m){ spotSay(m); if (isCam) camSay(m); }
   }
   function spotTick(){
     var now = Date.now();
@@ -870,7 +897,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     var sum = 0, i, n = spot.buf.length;
     for (i = 0; i < n; i++) sum += spot.buf[i] * spot.buf[i];
     var ev = spot.det.push(now, 10 * Math.log10(sum / n + 1e-12));
-    if (ev) heardTrain(ev);
+    if (ev) heardTrain(ev, 'mic', null);
     spotMeter(now, spot.det.state());
   }
   function spotMeter(now, st){
@@ -882,9 +909,139 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     if (txt !== spot.lastText){ spot.lastText = txt; var el = $('spotLevel'); if (el) el.textContent = txt; }
     var c = $('spotCount'); if (c) c.textContent = 'Heard and logged ' + spot.heard + ' this session' + (spot.skipped ? ', skipped ' + spot.skipped + ' that could not be matched' : '') + '.';
   }
+  // <camdetector>
+  // Camera spotting. Two thin vertical strips, one either side of the middle of the picture, are
+  // watched for movement (pixels that changed since the last frame). A train's front reaches one
+  // strip a moment before the other: the order gives the direction, and the midpoint of the two
+  // moments is when the front crossed the middle. Wind, flicker and people tend to stir both
+  // strips at once or only one, so they are ignored.
+  function stripActs(prev, cur, w, h, o){
+    var y0 = Math.floor(h * o.top), xs = [o.xl, o.xr], res = [0, 0], k, x, y, c, n, d;
+    for (k = 0; k < 2; k++){
+      c = 0; n = 0;
+      for (y = y0; y < h; y++) for (x = xs[k]; x < xs[k] + o.sw; x++){
+        n++; d = cur[y * w + x] - prev[y * w + x];
+        if (d > o.diffT || d < -o.diffT) c++;
+      }
+      res[k] = n ? c / n : 0;
+    }
+    return res;
+  }
+  function makeCamDetector(opt){
+    var o = { thr:0.12, minLagMs:50, maxLagMs:2500, quietMs:400, gapMs:4000, cooldownMs:8000 };
+    for (var k in (opt || {})) o[k] = opt[k];
+    var st = [0, 1].map(function(){ return { base:0.01, active:false, on:0, lastAbove:0, inactiveSince:-1e12, preGap:0 }; });
+    var lastEv = { R:-1e12, L:-1e12 };
+    return {
+      push: function(t, a0, a1){
+        var acts = [a0, a1], ev = null;
+        [0, 1].forEach(function(i){
+          var s = st[i], a = acts[i], thr = Math.max(o.thr, 3 * s.base);
+          if (!s.active){
+            if (a > thr){ s.active = true; s.on = t; s.lastAbove = t; s.preGap = t - s.inactiveSince; }
+            else s.base += (a - s.base) * 0.02;
+          } else {
+            if (a > thr * 0.6) s.lastAbove = t;
+            else if (t - s.lastAbove >= o.quietMs){ s.active = false; s.inactiveSince = s.lastAbove; }
+          }
+          if (s.on && t - s.on > o.maxLagMs && !s.active) s.on = 0;
+        });
+        [0, 1].forEach(function(i){
+          var s = st[i], other = st[1 - i];
+          if (s.on !== t || !other.on || ev) return; // only act on a fresh onset that has a partner
+          var lag = s.on - other.on; // positive: this strip came second
+          if (lag < o.minLagMs || lag > o.maxLagMs) return;
+          var dir = i === 1 ? 'R' : 'L', first = other;
+          if (first.preGap < o.gapMs || t - lastEv[dir] < o.cooldownMs) return;
+          lastEv[dir] = t;
+          ev = { center: (s.on + other.on) / 2, dir: dir, lagMs: lag };
+          s.on = 0; other.on = 0;
+        });
+        return ev;
+      }
+    };
+  }
+  // </camdetector>
+
+  var cam = { on:false, stream:null, timer:0, det:null, prev:null, cur:null, opt:null, W:80, H:45, flashUntil:0, lastDraw:0 };
+  function camSay(msg){ var el = $('camStatus'); if (el) el.textContent = msg; }
+  function camNorth(){ var v = store('bft-cam-north'); return v === 'left' || v === 'right' ? v : (ROWS[0].dir > 0 ? 'right' : 'left'); }
+  function camOpts(){
+    var W = cam.W, sw = Math.max(3, Math.round(W * 0.075));
+    return { top: +($('camArea').value || 0), sw: sw, xl: Math.round(W * 0.18), xr: Math.round(W * 0.82) - sw, diffT: 18 };
+  }
+  function camDetOpts(){ return { thr: { high:0.08, normal:0.12, low:0.2 }[spotSens()] }; }
+  function heardCam(ev){
+    var northward = (ev.dir === 'R') === (camNorth() === 'right');
+    cam.flashUntil = Date.now() + 600;
+    heardTrain(ev, 'cam', northward ? ['NS','NF'] : ['SF','SS']);
+  }
+  function camStep(){
+    if (!cam.on) return;
+    var now = Date.now(), v = $('camVideo'), W = cam.W, H = cam.H;
+    try {
+      if (v.readyState >= 2 && !isQuiet(now)){
+        cam.cx.drawImage(v, 0, 0, W, H);
+        var d = cam.cx.getImageData(0, 0, W, H).data, g = cam.cur, i, j;
+        for (i = 0, j = 0; j < W * H; i += 4, j++) g[j] = (d[i] * 77 + d[i+1] * 150 + d[i+2] * 29) >> 8;
+        if (cam.prev){
+          var a = stripActs(cam.prev, g, W, H, cam.opt), ev = cam.det.push(now, a[0], a[1]);
+          if (ev) heardCam(ev);
+        }
+        var t = cam.prev; cam.prev = g; cam.cur = t || new Uint8Array(W * H);
+        if (now - cam.lastDraw > 120) drawCam(now);
+      } else cam.prev = null;
+    } catch(e){}
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(camStep); else cam.timer = setTimeout(camStep, 66);
+  }
+  function drawCam(now){
+    cam.lastDraw = now;
+    var cv = $('camView'), cx = cv.getContext('2d'), o = cam.opt, sx = cv.width / cam.W, sy = cv.height / cam.H;
+    cx.drawImage($('camVideo'), 0, 0, cv.width, cv.height);
+    cx.fillStyle = now < cam.flashUntil ? 'rgba(47,179,90,0.55)' : 'rgba(255,194,51,0.35)';
+    var y0 = o.top * cv.height;
+    cx.fillRect(o.xl * sx, y0, o.sw * sx, cv.height - y0);
+    cx.fillRect(o.xr * sx, y0, o.sw * sx, cv.height - y0);
+    cx.fillStyle = 'rgba(255,255,255,0.7)'; cx.fillRect(cv.width / 2 - 1, y0, 2, cv.height - y0);
+  }
+  function startCam(fromLoad){
+    if (cam.on) return;
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){ camSay('This browser cannot use the camera. Open the page in Chrome over https.'); return; }
+    camSay('Asking for the camera…');
+    navigator.mediaDevices.getUserMedia({ audio:false, video:{ facingMode:{ ideal:'environment' }, width:{ ideal:640 }, height:{ ideal:360 }, frameRate:{ ideal:30 } } }).then(function(stream){
+      var v = $('camVideo'), work = document.createElement('canvas');
+      work.width = cam.W; work.height = cam.H;
+      cam.cx = work.getContext('2d', { willReadFrequently:true });
+      cam.cur = new Uint8Array(cam.W * cam.H); cam.prev = null; cam.opt = camOpts(); cam.det = makeCamDetector(camDetOpts());
+      cam.stream = stream; v.srcObject = stream; v.muted = true;
+      var p = v.play(); if (p && p.catch) p.catch(function(){});
+      cam.on = true; $('camView').hidden = false; store('bft-cam', '1'); $('camBtn').textContent = 'Stop watching';
+      camSay('Watching. Point the camera straight out of the window so the tracks fill the lower part of the picture. The yellow strips turn green when a train is seen.');
+      wantLock(); camStep();
+    }).catch(function(){
+      camSay(fromLoad ? 'Tap Start watching to switch the camera back on.' : 'The camera was not allowed. Allow it in the browser’s site settings and try again.');
+    });
+  }
+  function stopCam(){
+    cam.on = false; clearTimeout(cam.timer);
+    try { cam.stream.getTracks().forEach(function(t){ t.stop(); }); } catch(e){}
+    try { $('camVideo').srcObject = null; } catch(e){}
+    $('camView').hidden = true; store('bft-cam', '0'); $('camBtn').textContent = 'Start watching (camera)'; camSay('Not watching.');
+    if (!spot.on){ try { if (spot.lock) spot.lock.release(); } catch(e){} spot.lock = null; }
+  }
+  function camRestart(){ if (cam.on){ cam.opt = camOpts(); cam.det = makeCamDetector(camDetOpts()); cam.prev = null; } }
+  $('camBtn').addEventListener('click', function(){ if (cam.on) stopCam(); else startCam(false); });
+  $('camNorth').value = camNorth();
+  $('camNorth').addEventListener('change', function(){ store('bft-cam-north', this.value); });
+  $('camArea').value = store('bft-cam-area') || '0.33';
+  $('camArea').addEventListener('change', function(){ store('bft-cam-area', this.value); camRestart(); });
+  $('spotSens').addEventListener('change', camRestart);
+  $('dimBtn').addEventListener('click', function(){ $('dim').hidden = false; });
+  $('dim').addEventListener('click', function(){ this.hidden = true; });
+
   function wantLock(){
     try {
-      if (navigator.wakeLock && spot.on && !spot.lock) navigator.wakeLock.request('screen').then(function(l){
+      if (navigator.wakeLock && (spot.on || cam.on) && !spot.lock) navigator.wakeLock.request('screen').then(function(l){
         spot.lock = l; l.addEventListener('release', function(){ spot.lock = null; });
       }).catch(function(){});
     } catch(e){}
@@ -915,8 +1072,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     clearInterval(spot.timer); spot.on = false;
     try { spot.stream.getTracks().forEach(function(t){ t.stop(); }); } catch(e){}
     try { spot.ctx.close(); } catch(e){}
-    try { if (spot.lock) spot.lock.release(); } catch(e){}
-    spot.lock = null; store('bft-spot', '0');
+    if (!cam.on){ try { if (spot.lock) spot.lock.release(); } catch(e){} spot.lock = null; }
+    store('bft-spot', '0');
     $('spotBtn').textContent = 'Start listening'; spotSay('Not listening.'); spotMeter(Date.now() + 1000, null);
   }
   $('spotBtn').addEventListener('click', function(){ if (spot.on) stopSpot(); else startSpot(false); });
@@ -927,6 +1084,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
   });
   document.addEventListener('visibilitychange', function(){ if (!document.hidden) wantLock(); });
   if (store('bft-spot') === '1') startSpot(true);
+  if (store('bft-cam') === '1') startCam(true);
   function csvText(){
     var lines = ['time_iso,row,service,source,offset_s,via'];
     sightings.slice().sort(function(a,b){ return a.t - b.t; }).forEach(function(s){
