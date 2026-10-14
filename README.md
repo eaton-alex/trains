@@ -34,3 +34,7 @@ The page shows green "live" pills at the top for whichever feeds are working, an
 ## Your sightings
 
 Without the Claude artifact store, the "A train just passed" button keeps taps in the browser on that device only.
+
+## Auto-spot
+
+Open the page on a spare phone, expand "Listen for trains (auto-spot)" and press Start listening. The page measures how loud it is (nothing is recorded), turns each rise of several dB into a train event, matches it to the nearest predicted train and logs a sighting. Sightings stay on that device. It rests from 01:00 to 05:00.

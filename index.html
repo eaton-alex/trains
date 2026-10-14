@@ -64,6 +64,9 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
 #log li{margin-block:4px;overflow-wrap:anywhere}
 #log .x{font-size:12px;padding:2px 8px;box-shadow:none}
 .csv{width:100%;margin-top:10px;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;background:var(--page);color:var(--ink);border:2px solid var(--line);padding:8px}
+.meter{height:10px;border:2px solid var(--line);background:var(--panel);margin:10px 0}
+.meter i{display:block;height:100%;width:0;background:var(--marker)}
+#autobox select{font:inherit;margin-left:6px}
 @media (max-width:680px){
   .frame{border-width:5px;border-bottom-width:10px}
   .scale{font-size:7px}
@@ -112,6 +115,22 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     <textarea id="csvBox" class="csv" readonly hidden rows="6" aria-label="Sightings as CSV"></textarea>
   </details>
 
+  <details id="autobox">
+    <summary>Listen for trains (auto-spot)</summary>
+    <p>Put a spare phone on the windowsill with this page open and press Start listening. It hears each train go by and logs it as a sighting, matched to the nearest predicted train, so the predictions correct themselves without any tapping. Nothing is recorded or sent anywhere: the page only measures how loud it is.</p>
+    <div class="controls">
+      <button id="spotBtn" type="button">Start listening</button>
+      <label class="chk" for="spotSens">Sensitivity
+        <select id="spotSens"><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select>
+      </label>
+    </div>
+    <div class="meter" aria-hidden="true"><i id="spotBar"></i></div>
+    <p id="spotLevel" role="status">Not listening</p>
+    <p id="spotStatus">Not listening.</p>
+    <p id="spotCount"></p>
+    <p>Keep the device plugged in and the screen on (the page asks the phone to stay awake). Wind, rain on the glass and loud passers-by can fool it, so it only logs a train when a predicted one was due within about a minute on exactly one track. If it logs trains that did not pass, lower the sensitivity; if it misses them, raise it. Auto-spot rests from 01:00 to 05:00 like the rest of the page. Sightings are kept on the device that heard them.</p>
+  </details>
+
   <details>
     <summary>How the times are worked out</summary>
     <p>Each train is timed to the moment it passes your window. A train heading north is braking into the platform, so it passes about 17 seconds before it arrives. A train heading south has stopped for about 30 seconds and then pulls away, so it passes about 47 seconds after it arrives (about 57 for Windrush trains, which your sightings showed run a little later). Fast-line times from Realtime Trains are held back 13 seconds, again to match what you saw from the window. Fast trains do not stop, so they pass at their predicted time. The 120 m, braking and stopping figures sit at the top of the script if you want to adjust them.</p>
@@ -137,7 +156,8 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     slackStopS: 30,     // live National Rail stopping trains (dwell time varies)
     slackSimS: 60,      // simulated stopping trains
     slackFastS: 90,     // simulated fast-line trains
-    quietFromH: 1,      // London hour when the page rests (no feeds, no simulated trains)
+    micFrontS: 3,       // the microphone hears the middle of a train; its front reached the window about this long before
+    quietFromH: 1,     // London hour when the page rests (no feeds, no simulated trains)
     quietToH: 5,        // London hour when it wakes up again
     fieldS: 150,        // how far ahead the scene looks, in seconds
     W: 320, H: 180,
@@ -708,7 +728,7 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
     $('logCount').textContent = '(' + sightings.length + ')';
     sightings.slice(0, 20).forEach(function(s){
       var li = document.createElement('li');
-      li.textContent = clockSec(s.t) + ' · ' + rowName(s.row) + ' · ' + (s.off == null ? 'no predicted train nearby' : s.label + ', ' + offsetPhrase(s.off)) + ' ';
+      li.textContent = clockSec(s.t) + (s.via === 'mic' ? ' · heard' : '') + ' · ' + rowName(s.row) + ' · ' + (s.off == null ? 'no predicted train nearby' : s.label + ', ' + offsetPhrase(s.off)) + ' ';
       var b = document.createElement('button'); b.type = 'button'; b.className = 'x'; b.textContent = 'Remove';
       b.setAttribute('aria-label', 'Remove the sighting at ' + clockSec(s.t));
       b.addEventListener('click', function(){ removeSighting(s); });
@@ -759,20 +779,158 @@ details p{margin:10px 0 0;max-width:68ch;font-size:15px}
       msg = 'Logged on ' + rowName(rowId) + ' at ' + clockSec(obs) + '. Matched to ' + cand.label + ', ' + offsetPhrase(s.off) + '.';
     }
     flash[rowId] = now + 700;
+    commitSighting(s, msg);
+  }
+  function commitSighting(s, msg){
     if (dbCol){
       var ref = dbCol.doc();
       ref.set(s).catch(function(){ showToast('Could not save that sighting. Try again.'); });
       showToast(msg, function(){ ref.delete().catch(function(){}); });
     } else {
-      s.local = true; s.id = 'l' + obs;
+      s.local = true; s.id = 'l' + s.t;
       sightings.unshift(s); localSave(); sightingsChanged();
       showToast(msg, function(){ removeSighting(s); });
     }
   }
+
+  // ---- Auto-spot: listen for trains with this device's microphone --------------------
+  // <detector>
+  // Turns a stream of sound levels (dB, one every 0.1 s) into "a train went past" events.
+  // A train shows up as a rise of several dB over the background that lasts a few seconds to
+  // under a minute. The centre of the event (midway between the rise and the fall, measured
+  // 6 dB below the peak) is when the middle of the train was level with the microphone.
+  function makeDetector(opt){
+    var o = { onDb:9, offDb:4, minS:3, maxS:45, gapS:8, smoothS:1, baseUp:0.0005, baseDown:0.05 };
+    for (var k in (opt || {})) o[k] = opt[k];
+    var base = null, ring = [], inEv = false, start = 0, lowSince = 0, lastEnd = -1e12, series = [], peakV = -1e9, last = { over:0, base:0, inEv:false };
+    function finish(t){
+      inEv = false; lastEnd = t;
+      var dur = (lowSince - start) / 1000, over = peakV - base;
+      if (dur < o.minS || dur > o.maxS || over < o.onDb) return null;
+      var thr = peakV - 6, a = null, b = null;
+      series.forEach(function(p){ if (p[1] >= thr){ if (a === null) a = p[0]; b = p[0]; } });
+      return { center: (a + b) / 2, peakDb: Math.round((peakV - base) * 10) / 10, durS: Math.round(dur) };
+    }
+    return {
+      push: function(t, db){
+        ring.push([t, db]);
+        while (ring.length && ring[0][0] < t - o.smoothS * 1000) ring.shift();
+        var s = 0; ring.forEach(function(r){ s += r[1]; }); s /= ring.length;
+        if (base === null) base = s;
+        var over = s - base, ev = null;
+        if (!inEv){
+          if (over >= o.onDb && t - lastEnd > o.gapS * 1000){ inEv = true; start = t; lowSince = 0; peakV = s; series = [[t, s]]; }
+          else base += (s - base) * (s < base ? o.baseDown : o.baseUp);
+        } else {
+          series.push([t, s]);
+          if (s > peakV) peakV = s;
+          if (over < o.offDb){
+            if (!lowSince) lowSince = t;
+            if (t - lowSince >= 2000) ev = finish(t);
+          } else lowSince = 0;
+          if (inEv && t - start > o.maxS * 1000){ inEv = false; lastEnd = t; base = s; }
+        }
+        last = { over: over, base: base, inEv: inEv };
+        return ev;
+      },
+      state: function(){ return last; }
+    };
+  }
+  // </detector>
+
+  var SPOT_SENS = { high:6, normal:9, low:12 };
+  var AUTO_MATCH_MS = 75000, AUTO_AMBIG_MS = 15000;
+  var spot = { on:false, ctx:null, stream:null, timer:0, det:null, lock:null, heard:0, skipped:0, lastMeter:0, lastText:'' };
+  function spotSens(){ var v = store('bft-spot-sens'); return SPOT_SENS[v] ? v : 'normal'; }
+  function spotSay(msg){ var el = $('spotStatus'); if (el) el.textContent = msg; }
+  function heardTrain(ev){
+    var obs = Math.round(ev.center - CFG.micFrontS * 1000), cands = [];
+    trains.forEach(function(t){
+      var d = Math.abs(t.pass - obs);
+      if (d <= AUTO_MATCH_MS) cands.push({ t:t, d:d });
+    });
+    cands.sort(function(a,b){ return a.d - b.d; });
+    var when = clockSec(obs), what = 'Heard something at ' + when + ' (' + ev.peakDb + ' dB over the background, ' + ev.durS + ' s). ';
+    if (!cands.length){ spot.skipped++; spotSay(what + 'No train was predicted near then, so it was not logged.'); return; }
+    var best = cands[0], clash = cands.filter(function(c){ return c.t.row !== best.t.row && c.d <= best.d + AUTO_AMBIG_MS; })[0];
+    if (clash){ spot.skipped++; spotSay(what + 'Two tracks had a train due at about that time, so it was not logged.'); return; }
+    var s = { t: obs, row: best.t.row, via: 'mic', svc: best.t.svc, src: best.t.live ? 'live' : 'sim', label: best.t.label, off: Math.round((obs - best.t.raw) / 1000) };
+    spot.heard++;
+    flash[s.row] = Date.now() + 700;
+    var msg = 'Heard ' + best.t.label + ' on ' + rowName(s.row) + ' at ' + when + ', ' + offsetPhrase(s.off) + '.';
+    spotSay(msg);
+    commitSighting(s, msg);
+  }
+  function spotTick(){
+    var now = Date.now();
+    if (!spot.on) return;
+    if (spot.ctx.state === 'suspended') spot.ctx.resume();
+    if (isQuiet(now)){ spot.det = makeDetector({ onDb: SPOT_SENS[spotSens()] }); spotMeter(now, null); return; }
+    spot.an.getFloatTimeDomainData(spot.buf);
+    var sum = 0, i, n = spot.buf.length;
+    for (i = 0; i < n; i++) sum += spot.buf[i] * spot.buf[i];
+    var ev = spot.det.push(now, 10 * Math.log10(sum / n + 1e-12));
+    if (ev) heardTrain(ev);
+    spotMeter(now, spot.det.state());
+  }
+  function spotMeter(now, st){
+    if (now - spot.lastMeter < 250) return;
+    spot.lastMeter = now;
+    var over = st ? Math.max(0, st.over) : 0, bar = $('spotBar');
+    if (bar) bar.style.width = Math.min(100, over / 20 * 100) + '%';
+    var txt = st ? (st.inEv ? 'Something loud is passing' : 'Quiet') + ' · ' + (st.over >= 0 ? '+' : '') + st.over.toFixed(1) + ' dB over the background' : 'Resting';
+    if (txt !== spot.lastText){ spot.lastText = txt; var el = $('spotLevel'); if (el) el.textContent = txt; }
+    var c = $('spotCount'); if (c) c.textContent = 'Heard and logged ' + spot.heard + ' this session' + (spot.skipped ? ', skipped ' + spot.skipped + ' that could not be matched' : '') + '.';
+  }
+  function wantLock(){
+    try {
+      if (navigator.wakeLock && spot.on && !spot.lock) navigator.wakeLock.request('screen').then(function(l){
+        spot.lock = l; l.addEventListener('release', function(){ spot.lock = null; });
+      }).catch(function(){});
+    } catch(e){}
+  }
+  function startSpot(fromLoad){
+    if (spot.on) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && AC)){
+      spotSay('This browser cannot listen. Open the page in Chrome over https.'); return;
+    }
+    spotSay('Asking for the microphone…');
+    navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false } }).then(function(stream){
+      var ctx = new AC(), src = ctx.createMediaStreamSource(stream), hp = ctx.createBiquadFilter(), lp = ctx.createBiquadFilter(), an = ctx.createAnalyser();
+      hp.type = 'highpass'; hp.frequency.value = 100; lp.type = 'lowpass'; lp.frequency.value = 3000; an.fftSize = 2048;
+      src.connect(hp); hp.connect(lp); lp.connect(an);
+      spot.ctx = ctx; spot.stream = stream; spot.an = an; spot.buf = new Float32Array(an.fftSize);
+      spot.det = makeDetector({ onDb: SPOT_SENS[spotSens()] });
+      spot.on = true; spot.heard = 0; spot.skipped = 0;
+      spot.timer = setInterval(spotTick, 100);
+      store('bft-spot', '1'); $('spotBtn').textContent = 'Stop listening';
+      spotSay('Listening. Leave this device on the windowsill, plugged in, with the screen on.');
+      wantLock();
+    }).catch(function(){
+      spotSay(fromLoad ? 'Tap Start listening to switch the microphone back on.' : 'The microphone was not allowed. Allow it in the browser’s site settings and try again.');
+    });
+  }
+  function stopSpot(){
+    clearInterval(spot.timer); spot.on = false;
+    try { spot.stream.getTracks().forEach(function(t){ t.stop(); }); } catch(e){}
+    try { spot.ctx.close(); } catch(e){}
+    try { if (spot.lock) spot.lock.release(); } catch(e){}
+    spot.lock = null; store('bft-spot', '0');
+    $('spotBtn').textContent = 'Start listening'; spotSay('Not listening.'); spotMeter(Date.now() + 1000, null);
+  }
+  $('spotBtn').addEventListener('click', function(){ if (spot.on) stopSpot(); else startSpot(false); });
+  $('spotSens').value = spotSens();
+  $('spotSens').addEventListener('change', function(){
+    store('bft-spot-sens', this.value);
+    if (spot.on) spot.det = makeDetector({ onDb: SPOT_SENS[spotSens()] });
+  });
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) wantLock(); });
+  if (store('bft-spot') === '1') startSpot(true);
   function csvText(){
-    var lines = ['time_iso,row,service,source,offset_s'];
+    var lines = ['time_iso,row,service,source,offset_s,via'];
     sightings.slice().sort(function(a,b){ return a.t - b.t; }).forEach(function(s){
-      lines.push([new Date(s.t).toISOString(), s.row, s.svc || '', s.src || '', s.off == null ? '' : s.off].join(','));
+      lines.push([new Date(s.t).toISOString(), s.row, s.svc || '', s.src || '', s.off == null ? '' : s.off, s.via || 'tap'].join(','));
     });
     return lines.join('\n');
   }
